@@ -1,7 +1,7 @@
 
 ## Language specification
 ### Declarative Definitions
-Declares the computation of elements with declarative purely functional semanics via `compute`, `reduce` and `scan`, as well as primitive elementwise functions, functional `for` (affine), functional `if`, and functional `while` for control flow.
+Declares the computation of elements with declarative purely functional semantics via `compute`, `reduce` and `scan`, as well as primitive element-wise functions, functional `for` (affine), functional `if`, and functional `while` for control flow.
 
 matmul
 ```
@@ -264,4 +264,51 @@ def add_kernel(
 This makes many algorithms like FFT impossible. 
 *(technically its possible, but the performance would be worse than cpu)*
 
+
+To this effect, we have the kernel scoping:
+
+```python
+@hidet.jit
+def my_kernel(x: Tensor[[N, D], f32, RowMajor], 
+			  y: Tensor[[N, D], f32, RowMajor],
+			  output: Tensor[[N, D], f32, RowMajor]):
+	tid = hidet.program_id()
+
+	BLOCK_SIZE = hidet.auto_tune(D) # autotune based on D
+	x_smem = compute(
+		shape=[BLOCK_SIZE],
+		fcompute=lambda di: x[tid, di],
+		mem_type_hint=hidet.mem_type.smem,
+		layout_hint=hidet.layouts.row_major
+	)
+
+	y_mem = load(...) # perhaps some abbreviation?
+
+	res = x_mem + y_mem
+	store(...)
+
+	with hidet.thread_scope(...) as id:
+		# now with thread semantics
+```
+
+
+So under each instance of the program, identified by `program_id()`, we have single threaded semantics. Tensors are manipulated by intrinsics operating on the tile level, and intermediate tiles have unspecified layout and memory type.
+
+Speaking of which, each tensor type is parameterised by
+1. `dtype` The datatype
+2. `shape`
+3. `mem_type` The type of memory, we have `global`, `shared`, `local` (registers)
+4. `layout` The layout maps the logical index to the physical index. For memory type of `global` and `shared`, since each memory location is visible to all threads, the layout maps indices to indices; logical index to physical offset. When the memory type is `local`, the layout maps logical indices to the thread index and offset.
+
+Tensors have reference semantics.
+
+One can achieve thread-level manipulations by the `compute` intrinsic, or using a `thread_scope`. The `compute` intrinsic is pure and declarative, while under the `thread_scope`, normal CUDA thread block semantics applies. Eg, one would need to sync after `RAW`, `WAW`, etc. One can assume that all the operations before a `thread_scope` has already completed, and one must ensure that all operations have completed after exiting `thread_scope`.
+
+`thread_scope`s cannot be nested, as it is logically the same as a CUDA threadblock. I do not consider dynamic parallelism for now.
+
+Some problems needs to be solved with this design
+1. Reconciling automatically determined Layouts with user desired/required layouts, this is only relevant with `thread_scope`
+2. Reconciling automatically determined blocksizes with user desired/required blocksizes.
+
+The design also needs to include considerations from wish 3, eg: Expressing uncertainty between multiple potential implementations. I would like for the user to express a computation without `thread_scope`, first and if performance is insufficient, add another computationally equivalent imperative definition on top, leaving it to the compiler to determine which choice is optimal for a particular subset of inputs.
 
