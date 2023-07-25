@@ -13,8 +13,54 @@ Stored on shared memory
 Characterized by $\mathcal L$
 Stored on Registers
 
+> Distributed encodings have a layout function that is entirely characterized by a d-dimensional tensor L. Note that L doesn't need to have the same shape (or even the same rank) as the tensor it is encoding.
+
+$$\mathcal{L}(A, i_d)=\{L[i_d + k_d * A_d] : k_d \in \mathbb N, i_d + k_d * A_d < L_d\}$$
+Where $A_d = \text{shape}(A)[d]$, and $L_d = \text{shape}(L)[d]$
+
+For example, for a tensor/layout pair
+```
+A = [x  x  x  x  x  x  x  x]
+    [x  x  x  x  x  x  x  x]
+L = [0  1  2  3 ]
+    [4  5  6  7 ]
+    [8  9  10 11]
+    [12 13 14 15]
+```
+
+
+Then the data of A would be distributed as follow between the 16 CUDA threads:
+
+```
+L(A) = [ {0,8} , {1,9} , {2,10}, {3,11}, {0,8} , {1, 9} , {2, 10}, {3, 11},
+         {4,12}, {5,13}, {6,14}, {7,15}, {4,12}, {5, 13}, {6, 14}, {7, 15} ]
+```
+
 Blocked Encoding
 params: `sizePerThread`, `threadsPerWarp`, `warpsPerCTA`
+
+> An encoding where each warp owns a contiguous portion of the target tensor. This is typically the kind of data layout used to promote memory coalescing in LoadInst and StoreInst. It is characterized by three tuples -- thread tile size, warp tile size, and block tile size -- which specify the amount of elements owned by each CUDA thread, warp and CTA respectively.
+
+> For example, a row-major coalesced layout may partition a 16x16 tensor over 2 warps (i.e. 64 threads) as follows.
+
+```
+[ 0  0  1  1  2  2  3  3  ; 32 32 33 33 34 34 35 35 ]
+[ 0  0  1  1  2  2  3  3  ; 32 32 33 33 34 34 35 35 ]
+[ 4  4  5  5  6  6  7  7  ; 36 36 37 37 38 38 39 39 ]
+[ 4  4  5  5  6  6  7  7  ; 36 36 37 37 38 38 39 39 ]
+...
+[ 28 28 29 29 30 30 31 31 ; 60 60 61 61 62 62 63 63 ]
+[ 28 28 29 29 30 30 31 31 ; 60 60 61 61 62 62 63 63 ]
+```
+for
+```
+#triton_gpu.blocked_layout<{
+  sizePerThread = {2, 2}
+  threadsPerWarp = {8, 4}
+  warpsPerCTA = {1, 2}
+}>
+```
+
 
 Mma Encoding
 Encoding for C, and D, the outputs expected by Tensor Cores (on registers)
@@ -140,7 +186,7 @@ Then we have ttgir optimization passes
 13. symbol_dce
 
 #### Axis Info Analysis
-
+- Run before coalesce and pipeline passes
 ```c++
 /// The _contiguity_ information maps the `d`-th
 /// dimension to the length of the shortest
@@ -202,6 +248,26 @@ DimVectorT constancy;
 ```
 
 #### Coalesce
+Runs AxisInfo analysis on each operation, forward using `join` operation (should be called meet?). 
+- Join is the elementwise gcd of contiguity, divisibility and constancy
+
+Then coalesce gathers all the parent and child operations dependent upon the current operation, sorts into topological order, and filters by all the order that is the same as the current one.
+- The order is an array of integers specifying the fastest to slowest varying dimensions. (0 is the fastest varying index)
+
+Then calculates the maximum alignment, and thus the maximum number of elements per thread, out of all the filtered layouts. Call that `m`
+Then the coalesced encoding becomes a blocked layout with size per thread `[m, 1, ...]`. Where the length is the rank and the rest of the indices is 1.
+
+Then for all operations on tensors that has the same order and shape, we replace the encoding with the new encoding, and convert back afterwards.
+	(Hopefully the conversions are removed in the remove conversion pass)
+
+This is only calculated for the following memory (io) operations
+- LoadOp
+- AtomoicRMWOp
+- AtomicCASOp
+- InsertSliceAsyncOp
+- StoreOp
+
+
 
 ```
 module {
@@ -226,6 +292,16 @@ module {
   }
 }
 ```
+
+
+#### Final Ops, before llvm conversion
+1. ConvertLayoutOp
+2. DotOp
+3. ElementwiseOp
+4. Load/StoreOp
+5. ReduceOp
+6. ScanOp
+7. ViewOp
 
 ## Triton - Pre MLIR
 
