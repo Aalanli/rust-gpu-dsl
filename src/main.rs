@@ -2,38 +2,9 @@ use std::rc::{Rc, Weak};
 use std::sync::Arc;
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::cell::{RefCell, Ref};
+use std::collections::HashMap;
+use anyhow::{Result, Error};
 
-thread_local! {
-    static BLOCK_STACK: RefCell<Vec<Block>> = RefCell::new(vec![]);
-}
-
-static OBJECT_COUNTER: AtomicU64 = AtomicU64::new(0);
-
-fn new_id() -> u64 {
-    OBJECT_COUNTER.fetch_add(1, Ordering::SeqCst)
-}
-
-fn insert_block(block: Block) {
-    BLOCK_STACK.with(|stack| {
-        let mut stack = stack.borrow_mut();
-        stack.push(block);
-    })
-}
-
-fn pop_block() -> Block {
-    BLOCK_STACK.with(|stack| {
-        let mut stack = stack.borrow_mut();
-        stack.pop().unwrap()
-    })
-}
-
-fn insert_op(op: Op) {
-    BLOCK_STACK.with(|stack| {
-        let mut stack = stack.borrow_mut();
-        let block = stack.last_mut().unwrap();
-        block.ops.push(op);
-    })
-}
 
 #[derive(PartialEq, Eq, Clone)]
 struct Location {
@@ -53,103 +24,318 @@ impl<'a> From<std::panic::Location<'a>> for Location {
 }
 
 
+pub struct ModuleBuilder {
+    name: Option<String>,
+    body: Vec<Op>,
+    block_stack: Vec<Block>,
+}
 
-#[derive(Debug)]
-struct Value(Rc<ValueInternal>);
+impl ModuleBuilder {
+    thread_local! {
+        static MODULE_BUILDER: RefCell<Option<ModuleBuilder>> = RefCell::new(None);
+    }
+
+    thread_local! {
+        static INTRINSIC_FUNC: RefCell<HashMap<&'static str, FuncOp>> = RefCell::new(HashMap::new());
+    }
+    
+    pub fn new() -> Self {
+        ModuleBuilder {
+            name: None,
+            body: vec![],
+            block_stack: vec![],
+        }
+    }
+
+    pub fn set_name(mut self, name: &str) -> Self {
+        self.name = Some(name.to_string());
+        self
+    }
+
+    pub fn main_func(mut self, scope: impl Fn()) -> Result<ModuleOp> {
+        self.block_stack.push(Block::new());
+        Self::MODULE_BUILDER.with(|s| {
+            if s.borrow().is_some() {
+                return Err(Error::msg("ModuleBuilder already exists"));
+            }
+            s.borrow_mut().replace(self);
+            Ok(())
+        })?;
+        scope();
+        let mut builder = Self::MODULE_BUILDER.with(|s| {
+            if s.borrow().is_none() {
+                return Err(Error::msg("ModuleBuilder does not exist"));
+            }
+            Ok(s.borrow_mut().take().unwrap())
+        })?;
+        let block = builder.block_stack.pop().ok_or(Error::msg("No block"))?;
+        let func_ptr_val = Value::new(None, Type(Rc::new(TypeInternal::Fn(vec![], vec![]))));
+        let func_op = FuncOp {
+            name: "main".to_string(),
+            args: vec![],
+            body: block,
+            val: func_ptr_val,
+            returns: vec![],
+            kind: FuncKind::Def,
+        };
+        let op = Op(Rc::new(OpInternal::FuncOp(func_op)));
+        builder.body.push(op);
+
+        Ok(ModuleOp { name: builder.name, body: Block { ops: builder.body } })
+    }
+
+    pub fn build_fn(name: &str, args: Vec<(Option<String>, Type)>, returns: Vec<(Option<String>, Type)>, scope: impl Fn(&Vec<Value>)) -> Result<Value> {
+        Self::MODULE_BUILDER.with(|s| {
+            if s.borrow().is_none() {
+                return Err(Error::msg("ModuleBuilder does not exist"));
+            }
+            for opi in s.borrow().as_ref().unwrap().body.iter() {
+                if let OpInternal::FuncOp(func_op) = &*opi.0 {
+                    if func_op.name == name {
+                        return Err(Error::msg("Function already exists"));
+                    }
+                }
+            }
+            s.borrow_mut().as_mut().unwrap().block_stack.push(Block::new());
+            Ok(())
+        })?;
+        let arguments = args.iter().map(|(name, _type)| Value::new(name.clone(), _type.clone())).collect();
+        let returns: Vec<Value> = returns.iter().map(|(name, _type)| Value::new(name.clone(), _type.clone())).collect();
+        scope(&arguments);
+        let block_body = Self::MODULE_BUILDER.with(|s| {
+            if s.borrow().is_none() {
+                return Err(Error::msg("ModuleBuilder does not exist"));
+            }
+            Ok(s.borrow_mut().as_mut().unwrap().block_stack.pop().ok_or(Error::msg("No block"))?)
+        })?;
+        let func_ptr_val = Value::new(None, Type(Rc::new(TypeInternal::Fn(arguments.iter().map(|v| v._type().clone()).collect(), returns.iter().map(|v| v._type().clone()).collect()))));
+        let func_op = FuncOp {
+            name: name.to_string(),
+            args: arguments,
+            body: block_body,
+            val: func_ptr_val.clone(),
+            returns,
+            kind: FuncKind::Def,
+        };
+        let op = Op(Rc::new(OpInternal::FuncOp(func_op)));
+        Self::MODULE_BUILDER.with(|s| {
+            s.borrow_mut().as_mut().unwrap().body.push(op);
+        });
+        Ok(func_ptr_val)
+    }
+    
+    pub fn build_intrinsic_fn(name: &'static str, args: Vec<(Option<String>, Type)>, returns: Vec<(Option<String>, Type)>) -> Result<Value> {
+        Self::INTRINSIC_FUNC.with(|s| {
+            if s.borrow().contains_key(name) {
+                return Err(Error::msg("Function already exists"));
+            }
+            let arguments: Vec<Value> = args.iter().map(|(name, _type)| Value::new(name.clone(), _type.clone())).collect();
+            let returns: Vec<Value> = returns.iter().map(|(name, _type)| Value::new(name.clone(), _type.clone())).collect();
+            let func_ptr_val = Value::new(None, Type(Rc::new(TypeInternal::Fn(arguments.iter().map(|v| v._type().clone()).collect(), returns.iter().map(|v| v._type().clone()).collect()))));
+            let func_op = FuncOp {
+                name: name.to_string(),
+                args: arguments,
+                body: Block::new(),
+                val: func_ptr_val.clone(),
+                returns,
+                kind: FuncKind::Intrinsic,
+            };
+            s.borrow_mut().insert(name, func_op);
+            Ok(func_ptr_val)
+        })
+    }
+
+    pub fn get_intrinsic_fn(name: &'static str) -> Option<Value> {
+        Self::INTRINSIC_FUNC.with(|s| {
+            Some(s.borrow().get(name)?.val.clone())
+        })
+    }
+
+    pub fn get_fn(name: &str) -> Option<Value> {
+        Self::MODULE_BUILDER.with(|s| {
+            for opi in s.borrow().as_ref().unwrap().body.iter() {
+                if let OpInternal::FuncOp(func_op) = &*opi.0 {
+                    if func_op.name == name {
+                        return Some(func_op.val.clone());
+                    }
+                }
+            }
+            None
+        })
+    }
+
+    pub fn insert_op(op: Op) -> Result<()> {
+        Self::MODULE_BUILDER.with(|s| {
+            if s.borrow().is_none() {
+                return Err(Error::msg("ModuleBuilder does not exist"));
+            }
+            s.borrow_mut().as_mut().unwrap().block_stack.last_mut().ok_or(Error::msg("No block"))?.ops.push(op);
+            Ok(())
+        })
+    }
+}
+
+#[derive(Debug, Clone)]
+pub struct Value(Rc<ValueInternal>);
 impl Value {
     fn is(&self, other: &Value) -> bool {
         Rc::ptr_eq(&self.0, &other.0)
     }
-
-    fn set_name(&mut self, name: &str) {
-        *self.0.name.borrow_mut() = Some(name.to_string());
+    fn new(name: Option<String>, _type: Type) -> Self {
+        Value(Rc::new(ValueInternal {
+            name,
+            _type,
+        }))
     }
-
-    fn add_user(&mut self, op: &Op, operands: &Operand) {
-        self.0.users.borrow_mut().push((Op(op.0.clone()), Operand(operands.0.clone())));
-    }
-
-    fn users(&self) -> Ref<Vec<(Op, Operand)>> {
-        self.0.users.borrow()
-    }
-
-    fn get_name(&self) -> Option<String> {
-        self.0.name.borrow().clone()
-    }
-
-    fn make_operand(&self) -> Operand {
-        Operand(Rc::downgrade(&self.0))
-    }
-
 }
 #[derive(Debug)]
 struct ValueInternal {
-    name: RefCell<Option<String>>,
+    name: Option<String>,
     _type: Type,
-    users: RefCell<Vec<(Op, Operand)>>
+}
+
+impl Value {
+    fn _type(&self) -> &Type {
+        &self.0._type
+    }
 }
 
 
-#[derive(Debug, Clone)]
-struct Operand(Weak<ValueInternal>);
-
-
 #[derive(Debug)]
-struct Op(Rc<OpInternal>);
+pub struct Op(Rc<OpInternal>);
 #[derive(Debug)]
-enum OpInternal {
+pub enum OpInternal {
     Constant(ConstantOp),
+    BinaryOp(BinaryOp),
+    UnaryOp(UnaryOp),
     If(IfOp),
     While(WhileOp),
     For(ForOp),
+    Assign(AssignOp),
+    FuncOp(FuncOp),
+    Call(CallOp),
+    Cast(CastOp),
     Module(ModuleOp)
 }
+
+
 #[derive(Debug)]
-struct ModuleOp {
-    blocks: Vec<Block>,
+pub struct ModuleOp {
+    name: Option<String>,
+    body: Block,
 }
+
 #[derive(Debug)]
-struct ConstantOp {
+pub struct ConstantOp {
     value: Constant,
     result: Value
 }
+
 #[derive(Debug)]
-struct IfOp {
-    cond: Operand,
+pub struct IfOp {
+    cond: Value,
     then_block: Block,
     else_block: Block
 }
+
 #[derive(Debug)]
-struct WhileOp {
-    cond: Operand,
+pub struct WhileOp {
+    cond: Value,
     body: Block
 }
 #[derive(Debug)]
-struct ForOp {
-    init: Operand,
-    fin: Operand,
-    step: Operand,
+pub struct ForOp {
+    init: Value,
+    fin: Value,
+    step: Value,
     body: Block
 }
 
 #[derive(Debug)]
-struct AssignOp {
-    lhs: Operand,
-    rhs: Operand
+pub struct AssignOp {
+    lhs: Value,
+    rhs: Value
 }
+
+#[derive(Debug)]
+pub struct FuncOp {
+    name: String,
+    args: Vec<Value>,
+    body: Block,
+    returns: Vec<Value>,
+    val: Value,
+    kind: FuncKind,
+}
+
+#[derive(Debug)]
+enum FuncKind {
+    Def,
+    Intrinsic
+}
+
+#[derive(Debug)]
+pub struct YieldOp {
+    value: Vec<Value>
+}
+
+#[derive(Debug)]
+pub struct CallOp {
+    func: Value,
+    args: Vec<Value>,
+    returns: Vec<Value>
+}
+
+#[derive(Debug)]
+pub struct CastOp {
+    value: Value,
+    result: Value,
+    _type: Type,
+}
+
 
 #[derive(Debug)]
 struct Block {
-    values: Vec<Value>,
     ops: Vec<Op>
 }
 
-#[derive(Debug)]
-struct Type(Rc<TypeInternal>);
-#[derive(Debug)]
+impl Block {
+    fn new() -> Self {
+        Block {
+            ops: vec![]
+        }
+    }
+}
+
+#[derive(Debug, Eq, PartialEq, Clone)]
+pub struct Type(Rc<TypeInternal>);
+
+impl Type {
+    fn is_integer(&self) -> bool {
+        match &*self.0 {
+            TypeInternal::Val(Dtype::Int) => true,
+            _ => false
+        }
+    }
+
+    fn is_float(&self) -> bool {
+        match &*self.0 {
+            TypeInternal::Val(Dtype::Float) => true,
+            _ => false
+        }
+    }
+
+    fn is_bool(&self) -> bool {
+        match &*self.0 {
+            TypeInternal::Val(Dtype::Bool) => true,
+            _ => false
+        }
+    }
+}
+#[derive(Debug, Eq, PartialEq)]
 enum TypeInternal {
     Val(Dtype),
-    Ptr(Dtype)
+    Ptr(Dtype),
+    Fn(Vec<Type>, Vec<Type>),
 }
 #[derive(Debug)]
 enum Constant {
@@ -168,11 +354,21 @@ impl Constant {
     }
 }
 
-#[derive(Debug)]
+#[derive(Debug, Eq, PartialEq)]
 enum Dtype {
     Int,
     Float,
     Bool
+}
+
+impl Dtype {
+    fn bit_width(&self) -> u64 {
+        match self {
+            Dtype::Int => 64,
+            Dtype::Float => 64,
+            Dtype::Bool => 8
+        }
+    }
 }
 
 impl From<i64> for Constant {
@@ -193,108 +389,203 @@ impl From<bool> for Constant {
     }
 }
 
-fn constant<T: Into<Constant>>(val: T) -> Value {
+
+#[derive(Debug)]
+pub struct BinaryOp {
+    lhs: Value,
+    rhs: Value,
+    result: Value,
+    op: BinaryOps
+}
+
+#[derive(Debug, Clone)]
+enum BinaryOps { // (lhs, rhs, result)
+    Add,
+    Sub,
+    Mul,
+    Div,
+    Mod,
+    Pow,
+    And,
+    Or,
+    Eq,
+    Lt,
+    Leq,
+    Shr,
+    Shl,
+}
+
+#[derive(Debug)]
+pub struct UnaryOp {
+    val: Value,
+    result: Value,
+    op: UnaryOps
+}
+
+#[derive(Debug, Clone)]
+enum UnaryOps { // (val, result)
+    Neg,
+    Not,
+}
+
+
+fn constant<T: Into<Constant>>(val: T, name: Option<&str>) -> Result<Value> {
     let constant: Constant = val.into();
-    let value = ValueInternal {
-        name: RefCell::new(None),
-        _type: constant.get_type(),
-        users: RefCell::new(vec![])
-    };
-    let value = Value(Rc::new(value));
+    let result = Value::new(name.map(|s| s.to_string()), constant.get_type());
+
     let constant_op = ConstantOp {
         value: constant,
-        result: Value(value.0.clone())
+        result: result.clone()
     };
-    insert_op(Op(Rc::new(OpInternal::Constant(constant_op))));
-    value
+    ModuleBuilder::insert_op(Op(Rc::new(OpInternal::Constant(constant_op))))?;
+    Ok(result)
 }
 
-fn for_op(init: &mut Value, fin: &mut Value, step: &mut Value, body: impl Fn(&Value)) {
-    let induction_var = Value(Rc::new(ValueInternal {
-        name: RefCell::new(Some("i".to_string())),
-        _type: Type(Rc::new(TypeInternal::Val(Dtype::Int))),
-        users: RefCell::new(vec![])
-    }));
+// fn assign(lhs: &Value, rhs: &Value) -> Result<()> {
+//     if lhs.0._type != rhs.0._type {
+//         return Err(Error::msg("Type mismatch"));
+//     }
+//     let assign_op = AssignOp {
+//         lhs: lhs.clone(),
+//         rhs: rhs.clone()
+//     };
+//     insert_op(Op(Rc::new(OpInternal::Assign(assign_op))))?;
+//     Ok(())
+// }
 
-    let body_block = Block {
-        values: vec![Value(induction_var.0.clone())],
-        ops: vec![]
-    };
-    insert_block(body_block);
+// fn binary_op(lhs: &Value, rhs: &Value, op: BinaryOps) -> Result<Value> {
+//     let out_type = match op {
+//         BinaryOps::Add | BinaryOps::Sub | BinaryOps::Mul | BinaryOps::Div | BinaryOps::Pow => {
+//             if lhs.0._type != rhs.0._type {
+//                 return Err(Error::msg("Type mismatch"));
+//             }
+//             if !(lhs.0._type.is_integer() || lhs.0._type.is_float()) {
+//                 return Err(Error::msg("Must be integer or float"));
+//             }
+//             lhs.0._type.clone()
+//         },
+//         BinaryOps::And | BinaryOps::Or | BinaryOps::Lt | BinaryOps::Leq | BinaryOps::Eq => {
+//             if lhs.0._type != rhs.0._type {
+//                 return Err(Error::msg("Type mismatch"));
+//             }
+//             if !lhs.0._type.is_bool() {
+//                 return Err(Error::msg("Must be bool"));
+//             }
+//             Type(Rc::new(TypeInternal::Val(Dtype::Bool)))
+//         },
+//         BinaryOps::Mod | BinaryOps::Shr | BinaryOps::Shl => {
+//             if lhs.0._type != rhs.0._type {
+//                 return Err(Error::msg("Type mismatch"));
+//             }
+//             if !lhs.0._type.is_integer() {
+//                 return Err(Error::msg("Must be integer"));
+//             }
+//             lhs.0._type.clone()
+//         },
+//     };
 
-    body(&induction_var);
-    let init_oper = init.make_operand();
-    let fin_oper = fin.make_operand();
-    let step_oper = step.make_operand();
+//     let result = Value::new(None, out_type);
+//     let binary_op = BinaryOp {
+//         lhs: lhs.clone(),
+//         rhs: rhs.clone(),
+//         result: result.clone(),
+//         op
+//     };
+//     insert_op(Op(Rc::new(OpInternal::BinaryOp(binary_op))))?;
+//     Ok(result)
+// }
 
-    let for_op = ForOp {
-        init: init_oper.clone(),
-        fin: fin_oper.clone(),
-        step: step_oper.clone(),
-        body: pop_block()
-    };
-    let op = Op(Rc::new(OpInternal::For(for_op)));
-    init.add_user(&op, &init_oper);
-    fin.add_user(&op, &fin_oper);
-    step.add_user(&op, &step_oper);
-    insert_op(op);
-}
+// fn unary_op(val: &Value, op: UnaryOps) -> Result<Value> {
+//     let out_type = match op {
+//         UnaryOps::Neg => {
+//             if !val.0._type.is_integer() && !val.0._type.is_float() {
+//                 return Err(Error::msg("Must be integer or float"));
+//             }
+//             val.0._type.clone()
+//         },
+//         UnaryOps::Not => {
+//             if !val.0._type.is_bool() {
+//                 return Err(Error::msg("Must be bool"));
+//             }
+//             Type(Rc::new(TypeInternal::Val(Dtype::Bool)))
+//         },
+//     };
 
-fn if_op(cond: &mut Value, then_block: impl Fn(), else_block: impl Fn()) {
-    let cond_oper = cond.make_operand();
+//     let result = Value::new(None, out_type);
+//     let unary_op = UnaryOp {
+//         val: val.clone(),
+//         result: result.clone(),
+//         op
+//     };
+//     insert_op(Op(Rc::new(OpInternal::UnaryOp(unary_op))))?;
+//     Ok(result)
+// }
 
-    let then_block_ = Block {
-        values: vec![],
-        ops: vec![]
-    };
-    insert_block(then_block_);
+// fn for_op(init: &Value, fin: &Value, step: &Value, body: impl Fn(&Value) -> Result<()>) -> Result<()> {
+//     let induction_var = Value::new(Some("i".to_string()), Type(Rc::new(TypeInternal::Val(Dtype::Int))));
 
-    then_block();
+//     let body_block = with_scope(|| {
+//         body(&induction_var)
+//     })?;
 
-    let then_block_ = pop_block();
+//     let for_op = ForOp {
+//         init: init.clone(),
+//         fin: fin.clone(),
+//         step: step.clone(),
+//         body: body_block
+//     };
 
-    let else_block_ = Block {
-        values: vec![],
-        ops: vec![]
-    };
-    insert_block(else_block_);
+//     let op = Op(Rc::new(OpInternal::For(for_op)));
+//     insert_op(op)
+// }
 
-    else_block();
+// fn if_op(cond: &Value, then_block: impl Fn() -> Result<()>, else_block: Option<impl Fn() -> Result<()>>) -> Result<()> {
+//     let then_block = with_scope(|| {
+//         then_block()
+//     })?;
 
-    let else_block_ = pop_block();
+//     let else_block = with_scope(|| {
+//         if let Some(else_block) = &else_block {
+//             else_block()?;
+//         }
+//         Ok(())
+//     })?;
+    
+//     let if_op = IfOp {
+//         cond: cond.clone(),
+//         then_block,
+//         else_block 
+//     };
+//     let op = Op(Rc::new(OpInternal::If(if_op)));
+//     insert_op(op)
+// }
 
-    let if_op = IfOp {
-        cond: cond_oper.clone(),
-        then_block: then_block_,
-        else_block: else_block_ 
-    };
-    let op = Op(Rc::new(OpInternal::If(if_op)));
-    cond.add_user(&op, &cond_oper);
-    // cond.add_user(Op(Rc::new(OpInternal::If(if_op.clone()))));
-    insert_op(op);
-}
+// fn while_op(cond: &Value, body: impl Fn() -> Result<()>) -> Result<()> {
+//     let body = with_scope(|| {
+//         body()
+//     })?;
 
-fn while_op(cond: &Value, body: impl Fn()) {
-    let cond_oper = cond.make_operand();
+//     let while_op = WhileOp {
+//         cond: cond.clone(),
+//         body: body
+//     };
+//     insert_op(Op(Rc::new(OpInternal::While(while_op))))
+// }
 
-    let body_block = Block {
-        values: vec![],
-        ops: vec![]
-    };
-    insert_block(body_block);
-
-    body();
-
-    let while_op = WhileOp {
-        cond: cond_oper,
-        body: pop_block()
-    };
-    insert_op(Op(Rc::new(OpInternal::While(while_op))));
-}
 
 
 fn main() {
-    let a = constant(1);
-    let b = constant(10);
+    // let block = with_scope(|| {
+    //     let a = constant(1, Some("a"))?;
+    //     let b = constant(10, Some("b"))?;
+    //     let c = binary_op(&a, &b, BinaryOps::Add)?;
+    //     for_op(&constant(0, None)?, &b, &constant(1, None)?, |i| {
+    //         assign(&c, &binary_op(&a, &i, BinaryOps::Add)?)
+    //     })?;
+    //     Ok(())
+    // });
+
+
+    // println!("{:#?}", block);
 
 }
