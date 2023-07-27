@@ -3,6 +3,7 @@ use std::hash::{Hash, Hasher};
 use std::sync::Arc;
 use std::collections::HashMap;
 use std::cell::{RefCell, Ref};
+use std::thread::Scope;
 
 use anyhow::{Error, Result};
 
@@ -31,14 +32,14 @@ impl TraitRegistry {
 }
 
 
-#[derive(Debug, PartialEq, Eq)]
+#[derive(Debug, PartialEq, Eq, Clone)]
 pub enum Type {
     DType(Dtype),
     FnPtr(Vec<Type>, Vec<Type>),
     Ptr(Dtype)
 }
 
-#[derive(Debug, PartialEq, Eq)]
+#[derive(Debug, PartialEq, Eq, Clone)]
 pub enum Dtype {
     Float,
     Int,
@@ -56,12 +57,20 @@ pub enum ConstValue {
 pub struct Value(Arc<ValueInternal>);
 
 impl Value {
-    pub fn new(_type: Type, name: Option<&str>) -> Self {
+    pub fn new(_type: Type, name: Option<String>) -> Self {
         Value(Arc::new(
             ValueInternal { name: name.map(|x| x.to_string()), _type }
         ))
     }
 }
+
+impl PartialEq for Value {
+    fn eq(&self, other: &Self) -> bool {
+        Arc::ptr_eq(&self.0, &other.0)
+    }
+}
+
+impl Eq for Value {}
 
 impl Hash for Value {
     fn hash<H: Hasher>(&self, state: &mut H) {
@@ -75,7 +84,7 @@ struct ValueInternal {
     _type: Type,
 }
 
-#[derive(Debug)]
+#[derive(Debug, PartialEq, Eq, Clone, Hash)]
 pub struct Operand {
     id: Arc<()>
 }
@@ -90,26 +99,69 @@ impl Operand {
 pub struct Op {
     parent_def: HashMap<Operand, Value>,
     users: HashMap<Value, Vec<Operand>>,
-    loc: Location,
-    op: Arc<OpEnum>
+    vparent_op: HashMap<Value, Op>,
+    oper_parent_op: HashMap<Operand, Op>,
+    loc: Option<Location>,
+    op: OpEnum
+}
+
+impl Op {
+    pub fn new(op: OpEnum, loc: Option<Location>) -> Self {
+        Op {
+            parent_def: HashMap::new(),
+            users: HashMap::new(),
+            vparent_op: HashMap::new(),
+            oper_parent_op: HashMap::new(),
+            loc,
+            op: op
+        }
+    }
 }
 
 #[derive(Debug)]
 pub enum OpEnum {
-    Constant(ConstantOp),
-    If(IfOp),
-    For(ForOp),
-    While(WhileOp),
-    DeclareFn(DeclareFnOp),
-    Call(CallOp),
-    Yield(YieldOp),
-    Module(ModuleOp),
+    Constant(Arc<ConstantOp>),
+    If(Arc<IfOp>),
+    For(Arc<ForOp>),
+    While(Arc<WhileOp>),
+    DeclareFn(Arc<DeclareFnOp>),
+    Call(Arc<CallOp>),
+    Yield(Arc<YieldOp>),
+    Module(Arc<ModuleOp>),
+}
+
+impl Op {
+    pub fn operands(&self) -> Option<&[Operand]> {
+        match &self.op {
+            OpEnum::Constant(_) => None,
+            OpEnum::If(op) => Some(&op.operands),
+            OpEnum::For(op) => Some(&op.operands),
+            OpEnum::While(op) => Some(&op.operands),
+            OpEnum::DeclareFn(_) => None,
+            OpEnum::Call(op) => Some(&op.args),
+            OpEnum::Yield(op) => Some(&op.operand),
+            OpEnum::Module(_) => None,
+        }
+    }
+
+    pub fn values(&self) -> Option<&[Value]> {
+        match &self.op {
+            OpEnum::Constant(op) => Some(&op.ret),
+            OpEnum::If(op) => Some(&op.ret),
+            OpEnum::For(op) => Some(&op.ret),
+            OpEnum::While(op) => Some(&op.ret),
+            OpEnum::DeclareFn(op) => Some(&op.ret),
+            OpEnum::Call(op) => Some(&op.ret),
+            OpEnum::Yield(_) => None,
+            OpEnum::Module(_) => None,
+        }
+    }
 }
 
 #[derive(Debug)]
 pub struct ConstantOp {
     value: ConstValue,
-    ret: Value,
+    ret: Vec<Value>,
 }
 
 #[derive(Debug)]
@@ -146,8 +198,10 @@ pub struct WhileOp {
 pub struct DeclareFnOp {
     name: String,
     body: Block,
-    ret: Value,
-    fn_type: FnType
+    args: Vec<Value>,
+    ret: Vec<Value>,
+    fn_type: FnType,
+    fn_kind: FnKind,
 }
 
 #[derive(Debug)]
@@ -157,15 +211,21 @@ pub enum FnType {
 }
 
 #[derive(Debug)]
+pub enum FnKind {
+    Device,
+    Host
+}
+
+#[derive(Debug)]
 pub struct CallOp {
-    fn_arg: Operand,
+    func: Op,
     args: Vec<Operand>,
     ret: Vec<Value>,
 }
 
 #[derive(Debug)]
 pub struct YieldOp { // terminator
-    operand: Operand
+    operand: Vec<Operand>
 }
 
 #[derive(Debug)]
@@ -199,27 +259,38 @@ pub struct Block {
     body: Vec<Op>
 }
 
+
 pub struct ModuleBuilder {
     name: Option<String>,
     body: Vec<Op>,
-    block_stack: Vec<Block>
+    op_stack: Vec<ScopeStack>
 }
 
-/*
+struct ScopeStack {
+    stack: Vec<Op>,
+    oper_refer: HashMap<Operand, Value>,
+}
+
+impl ScopeStack {
+    fn connect(&mut self, operand: &Operand, value: &Value) {
+        self.oper_refer.insert(operand.clone(), value.clone());
+    }
+}
+
 impl ModuleBuilder {
     thread_local! {
         static MODULE_BUILDER: RefCell<Option<ModuleBuilder>> = RefCell::new(None);
     }
 
     thread_local! {
-        static INTRINSIC_FUNC: RefCell<HashMap<&'static str, FuncOp>> = RefCell::new(HashMap::new());
+        static INTRINSIC_FUNC: RefCell<HashMap<&'static str, Arc<DeclareFnOp>>> = RefCell::new(HashMap::new());
     }
     
     pub fn new() -> Self {
         ModuleBuilder {
             name: None,
             body: vec![],
-            block_stack: vec![],
+            op_stack: vec![],
         }
     }
 
@@ -227,7 +298,7 @@ impl ModuleBuilder {
         self.name = Some(name.to_string());
         self
     }
-
+    /*
     pub fn main_func(mut self, scope: impl Fn()) -> Result<ModuleOp> {
         self.block_stack.push(Block::new());
         Self::MODULE_BUILDER.with(|s| {
@@ -258,15 +329,15 @@ impl ModuleBuilder {
         builder.body.push(op);
 
         Ok(ModuleOp { name: builder.name, body: Block { ops: builder.body } })
-    }
-
-    pub fn build_fn(name: &str, args: Vec<(Option<String>, Type)>, returns: Vec<(Option<String>, Type)>, scope: impl Fn(&Vec<Value>)) -> Result<Value> {
+    }*/
+    /* 
+    pub fn declare_fn(name: &str, args: Vec<(Option<String>, Type)>, returns: Vec<(Option<String>, Type)>, scope: impl Fn(&Vec<Value>)) -> Result<()> {
         Self::MODULE_BUILDER.with(|s| {
             if s.borrow().is_none() {
                 return Err(Error::msg("ModuleBuilder does not exist"));
             }
             for opi in s.borrow().as_ref().unwrap().body.iter() {
-                if let OpInternal::FuncOp(func_op) = &*opi.0 {
+                if let OpEnum::DeclareFn(func_op) = &*opi.0 {
                     if func_op.name == name {
                         return Err(Error::msg("Function already exists"));
                     }
@@ -299,58 +370,116 @@ impl ModuleBuilder {
         });
         Ok(func_ptr_val)
     }
-    
-    pub fn build_intrinsic_fn(name: &'static str, args: Vec<(Option<String>, Type)>, returns: Vec<(Option<String>, Type)>) -> Result<Value> {
+    */
+
+    fn new_scope() {
+        Self::MODULE_BUILDER.with(|s| {
+            s.borrow_mut().as_mut().expect("No Module Builder present").op_stack.push(ScopeStack {
+                stack: vec![],
+                oper_refer: HashMap::new(),
+            });
+        });
+    }
+
+    fn with_scope<R>(mut f: impl FnMut(ScopeStack) -> R) -> R {
+        Self::MODULE_BUILDER.with(|s| {
+            f(s.borrow_mut().as_mut().expect("No Module Builder present").op_stack.pop().expect("No block present"))
+        })
+    }
+
+    fn build_intrinsic_fn(name: &'static str, args: Vec<(Option<String>, Type)>, returns: Vec<(Option<String>, Type)>) -> Result<()> {
         Self::INTRINSIC_FUNC.with(|s| {
             if s.borrow().contains_key(name) {
                 return Err(Error::msg("Function already exists"));
             }
-            let arguments: Vec<Value> = args.iter().map(|(name, _type)| Value::new(name.clone(), _type.clone())).collect();
-            let returns: Vec<Value> = returns.iter().map(|(name, _type)| Value::new(name.clone(), _type.clone())).collect();
-            let func_ptr_val = Value::new(None, Type(Rc::new(TypeInternal::Fn(arguments.iter().map(|v| v._type().clone()).collect(), returns.iter().map(|v| v._type().clone()).collect()))));
-            let func_op = FuncOp {
+            let arguments: Vec<Value> = args.iter().map(|(name, _type)| Value::new(_type.clone(), name.clone())).collect();
+            let returns: Vec<Value> = returns.iter().map(|(name, _type)| Value::new(_type.clone(), name.clone())).collect();
+            let func_op = DeclareFnOp {
                 name: name.to_string(),
                 args: arguments,
-                body: Block::new(),
-                val: func_ptr_val.clone(),
-                returns,
-                kind: FuncKind::Intrinsic,
+                body: Block { values: vec![], body: vec![] },
+                ret: returns,
+                fn_type: FnType::Intrinsic,
+                fn_kind: FnKind::Host,
             };
-            s.borrow_mut().insert(name, func_op);
-            Ok(func_ptr_val)
+            s.borrow_mut().insert(name, Arc::new(func_op));
+            Ok(())
         })
     }
 
-    pub fn get_intrinsic_fn(name: &'static str) -> Option<Value> {
+    fn get_intrinsic_fn(name: &'static str) -> Option<Arc<DeclareFnOp>> {
         Self::INTRINSIC_FUNC.with(|s| {
-            Some(s.borrow().get(name)?.val.clone())
+            Some(s.borrow().get(name)?.clone())
         })
     }
 
-    pub fn get_fn(name: &str) -> Option<Value> {
-        Self::MODULE_BUILDER.with(|s| {
-            for opi in s.borrow().as_ref().unwrap().body.iter() {
-                if let OpInternal::FuncOp(func_op) = &*opi.0 {
-                    if func_op.name == name {
-                        return Some(func_op.val.clone());
-                    }
-                }
-            }
-            None
+    fn has_intrinsic_fn(name: &'static str) -> bool {
+        Self::INTRINSIC_FUNC.with(|s| {
+            s.borrow().contains_key(name)
         })
     }
 
-    pub fn insert_op(op: Op) -> Result<()> {
+    fn insert_op(op: Op) -> Result<()> {
         Self::MODULE_BUILDER.with(|s| {
             if s.borrow().is_none() {
                 return Err(Error::msg("ModuleBuilder does not exist"));
             }
-            s.borrow_mut().as_mut().unwrap().block_stack.last_mut().ok_or(Error::msg("No block"))?.ops.push(op);
+            s.borrow_mut().as_mut().unwrap().op_stack.last_mut().ok_or(Error::msg("No block"))?.stack.push(op);
             Ok(())
         })
     }
 }
-*/
+
+pub fn constant<T: Into<ConstValue>>(a: T, name: Option<&str>) -> Value {
+    let val = a.into();
+    let value_type = match val {
+        ConstValue::Float(_) => Type::DType(Dtype::Float),
+        ConstValue::Int(_) => Type::DType(Dtype::Int),
+        ConstValue::Bool(_) => Type::DType(Dtype::Bool),
+    };
+    let value = Value::new(value_type, name.map(|x| x.to_string()));
+    let op = Op::new(OpEnum::Constant(Arc::new(ConstantOp { value: val, ret: vec![value.clone()] })), None);
+    ModuleBuilder::insert_op(op).expect("failed to insert op");
+    value
+}
+
+
+pub fn for_op(init: &Value, step: &Value, end: &Value, scope: impl Fn()) {
+    ModuleBuilder::new_scope();
+    scope();
+    let op = ModuleBuilder::with_scope(|stack| {
+        let ScopeStack { mut stack, mut oper_refer } = stack;
+
+        let mut users = HashMap::<Value, Vec<Operand>>::new();
+        let mut oper_parent = HashMap::<Operand, Op>::new();
+        let mut val_parent = HashMap::<Value, Op>::new();
+
+        for i in stack {
+            if let Some(oper) = i.operands() {
+                // add users to source value
+                for p in oper {
+                    let v = oper_refer.get(p).expect("Failed to retrieve operand, graph is disconnected");
+                    if !users.contains_key(v) {
+                        users.insert(v.clone(), vec![]);
+                    }
+                    users.get_mut(v).unwrap().push(p.clone());
+                }
+                // add parent op to operand
+                // for p in oper {
+                //     oper_parent.insert(p.clone(), i.clone());
+                // }
+            }
+            if let Some(v) = i.values() {
+                for vi in v {
+                    
+                }
+
+            }
+            println!("{:?}", i);
+        }
+    });
+}
+
 #[test]
 fn test_arc() {
     let a = Arc::new(());
