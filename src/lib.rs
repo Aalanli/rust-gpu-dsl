@@ -92,6 +92,8 @@ pub enum Dtype {
     Bool
 }
 
+mod mutable_ir;
+
 #[derive(Debug, PartialEq, Clone)]
 pub enum ConstValue {
     Float(f64),
