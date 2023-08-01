@@ -101,39 +101,37 @@ AnyType := FloatLike | IntLike | PtrLike | TensorPtr
 
 Load (ptr: PtrLike | TensorPtr, mask: BoolLike, other: AnyType)
 Store (ptr: PtrLike | TensorPtr, value: AnyType, mask: BoolLike)
+atomic_rmw (..., ptr: PtrLike, type: AnyType, ...)
+atomic_cas (...)
 
-splat (src: AnyType, result: Tensor)
-expand_dims
-view
-broadcast
-cat
-trans
+splat (src: AnyType)  -> Tensor
+expand_dims (src: Tensor, axis: I32Attr) -> Tensor
+view (src: Tensor) -> Tensor 
+broadcast (src: AnyType) -> AnyType
+cat (lhs: Tensor, rhs: Tensor) -> Tensor
+trans (src: Tensor) -> Tensor
 
-get_program_id
-get_num_programs
+get_program_id () -> I32
+get_num_programs () -> I32
 
-dot
-reduce
-scan
+dot (a: FpIntTensor, b: FpIntTensor, c: FpIntTensor) -> FpIntTensor
+reduce (operands: Variadic(Tensor), axis: I32Attr) -> Varadic(Tensor)
+scan (...)
 
-element_wise
-
-make_range
-
-make_tensor_ptr
+make_range (start: I32Attr, end: I32Attr) -> IntTensor
 
 #### TTGIR Ops
 
-convert_layout
+convert_layout (src: Tensor) -> Tensor
 
-async_wait
-async_commit_group
+async_wait (ins: I32Attr)
+async_commit_group ()
 
 select
 
 extract_slice
 
-insert_slice_async
+insert_slice_async (src: PtrTensor, dst: Tensor, index: I32, mask: Optional(I1Tensor), other: AnyType, axis: I32Attr, ...) -> Tensor
 
 ```
 %1 = triton_gpu.alloc_tensor : tensor<2x32xf32>
