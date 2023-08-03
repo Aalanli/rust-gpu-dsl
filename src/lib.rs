@@ -34,6 +34,56 @@ impl TraitRegistry {
 }
 
 
+pub trait AsAny {
+    fn as_any(&self) -> &dyn Any;
+}
+
+impl<T: 'static + Sized> AsAny for T {
+    fn as_any(&self) -> &dyn Any {
+        self
+    }
+}
+
+pub trait Operation: AsAny {
+    fn uses(&self) -> i32;
+}
+
+struct OpTraitRegistry {
+    converters: HashMap<(std::any::TypeId, std::any::TypeId), Box<dyn Any>>,
+}
+
+impl OpTraitRegistry {
+    fn new() -> Self {
+        OpTraitRegistry {
+            converters: HashMap::new()
+        }
+    }
+
+    fn register_trait<OP: Operation + 'static, TRAIT: 'static + ?Sized>(&mut self, f: fn(&dyn Operation) -> Option<&TRAIT>) -> Result<()> {
+        let id = std::any::TypeId::of::<OP>();
+        let trait_id = std::any::TypeId::of::<TRAIT>();
+        println!("{:?} {:?}", id, trait_id);
+        // let fbox: Box<dyn Fn(&'a dyn Operation) -> Option<&'a TRAIT> + 'static> = Box::new(f1);
+        
+        if self.converters.contains_key(&(id, trait_id)) {
+            return Err(Error::msg("Converter already registered"));
+        }
+        self.converters.insert((id, trait_id), Box::new(f));
+        Ok(())
+    }
+
+    fn get_trait<'a, TRAIT: 'static + ?Sized>(&self, op: &'a dyn Operation) -> Option<&'a TRAIT> {
+        let id = op.as_any().type_id();
+        let trait_id = std::any::TypeId::of::<TRAIT>();
+        println!("{:?} {:?}", id, trait_id);
+        let f = self.converters.get(&(id, trait_id))?
+            .downcast_ref::<fn(&dyn Operation) -> Option<&TRAIT>>()?;
+        f(op)
+    }
+}
+
+
+
 #[derive(Debug, PartialEq, Eq, Clone)]
 pub enum Type {
     DType(Dtype),
