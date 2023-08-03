@@ -7,6 +7,8 @@ use std::thread::Scope;
 
 use anyhow::{Error, Result};
 
+mod linear_ir;
+
 struct TraitRegistry {
     trait_converters: HashMap<(std::any::TypeId, std::any::TypeId), Box<dyn Any>>,
 }
