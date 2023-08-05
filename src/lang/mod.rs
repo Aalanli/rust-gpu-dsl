@@ -296,15 +296,6 @@ pub struct FunctionBuilder {
     scope: Vec<Vec<AST>>,
 }
 
-fn map_array<const N: usize, T, V>(arr: &[T; N], f: impl Fn(&T) -> V) -> [V; N] {
-    use std::mem::MaybeUninit;
-    let mut out: [MaybeUninit<V>; N] = unsafe { MaybeUninit::uninit().assume_init() };
-    for (res, val) in out.iter_mut().zip(arr.iter()) {
-        *res = MaybeUninit::new(f(val));
-    }
-    unsafe { (&out as *const _ as *const [V; N]).read() }
-}
-
 impl FunctionBuilder {
     pub fn new(name: impl Into<String>) -> Self {
         FunctionBuilder {
@@ -314,9 +305,8 @@ impl FunctionBuilder {
         }
     }
 
-    pub fn arg<const N: usize>(&mut self, args: [Type; N]) -> [Value; N] {
-        // do this for pattern matching, TODO: remove unsafe
-        let values: [Value; N] = map_array(&args, |ty| Value::new(ty.clone()));
+    pub fn arg<const N: usize>(&mut self, args: [Type; N]) -> [Value; N] {        
+        let values: [Value; N] = args.map(|ty| Value::new(ty.clone()));
         for i in &values {
             self.args.push(i.clone());
         }
