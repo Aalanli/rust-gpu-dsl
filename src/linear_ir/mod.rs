@@ -1,9 +1,12 @@
 // Each Value is the result of one Operation. Operations must list all Values that it uses, so that all
-// values in a block that is not produced from an Operation in that block are block arguments. 
+// values in a block that is not produced from an Operation in that block are block arguments.
 
-use std::{rc::Rc, collections::{HashSet, HashMap}, hash::Hash};
-use anyhow::{Result, Error};
-
+use anyhow::{Error, Result};
+use std::{
+    collections::{HashMap, HashSet},
+    hash::Hash,
+    rc::Rc,
+};
 
 #[derive(Clone, Copy, Eq, PartialEq, Hash)]
 pub struct ID(usize);
@@ -48,9 +51,7 @@ impl Value {
     /// Signfies that this is the result of an Operation, or a block argument introduced by the semantics of an Operation
     /// eg, the induction variable of the for_op
     pub fn new(type_of: Type) -> Self {
-        Value(Rc::new(ValueImpl {
-            type_of,
-        }))
+        Value(Rc::new(ValueImpl { type_of }))
     }
 
     pub fn type_of(&self) -> &Type {
@@ -72,7 +73,6 @@ struct ValueImpl {
     type_of: Type,
 }
 
-
 pub struct Block {
     args: Vec<Value>,
     operations: Vec<Op>,
@@ -80,7 +80,10 @@ pub struct Block {
 
 impl Block {
     pub fn new(args: Vec<Value>) -> Self {
-        Block { args, operations: vec![] }
+        Block {
+            args,
+            operations: vec![],
+        }
     }
 
     pub fn args(&self) -> &[Value] {
@@ -96,7 +99,7 @@ impl Block {
 
         for op in &self.operations {
             op.verify()?; // TODO: add context
-            // verify that all operands have a block argument as parent
+                          // verify that all operands have a block argument as parent
             produced_values.extend(op.produces());
         }
 
@@ -108,7 +111,7 @@ impl Block {
             }
         }
         Ok(())
-    } 
+    }
 }
 
 pub struct OperationBase {
@@ -178,11 +181,10 @@ impl OperationBase {
     }
 }
 
-
 pub enum ArgumentSemantic {
     Move,
-    Ref // immutable reference
-    // we do not allow mutable references, as they are equivalent to move and return
+    Ref, // immutable reference
+         // we do not allow mutable references, as they are equivalent to move and return
 }
 
 pub struct Op;
@@ -227,23 +229,28 @@ impl ForOp {
         }
         for op in self.base.uses[0..3].iter() {
             if op.type_of() != &Type::Scalar(Dtype::I32) {
-                return Err(Error::msg("First 3 operands of ForOp must be $start, $end, $step, of type i32"));
+                return Err(Error::msg(
+                    "First 3 operands of ForOp must be $start, $end, $step, of type i32",
+                ));
             }
         }
         if self.base.uses.len() - 3 != self.base.return_values.len() {
             return Err(Error::msg("ForOp must have exactly 3 more operands than return values, as the rest of values are carried"));
         }
-        for (user, ret) in self.base.uses[3..].iter().zip(self.base.return_values.iter()) {
+        for (user, ret) in self.base.uses[3..]
+            .iter()
+            .zip(self.base.return_values.iter())
+        {
             if user.type_of() != ret.type_of() {
-                return Err(Error::msg("ForOp return values must have the same type as the corresponding operand"));
+                return Err(Error::msg(
+                    "ForOp return values must have the same type as the corresponding operand",
+                ));
             }
         }
         // TODO: add block check
         Ok(())
     }
 }
-
-
 
 pub struct UsageAnalysis<'a> {
     value_source: HashMap<&'a Value, &'a Op>,
@@ -279,7 +286,6 @@ impl<'a> UsageAnalysis<'a> {
         self.value_uses.get(value).map(|v| &v[..]).unwrap_or(&[])
     }
 }
-
 
 pub trait DataFlowAnalysis {
     fn join(&self, result_uses: &[bool], is_pure: bool) -> Vec<bool>;

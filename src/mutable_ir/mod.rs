@@ -1,9 +1,9 @@
+use anyhow::{Error, Result};
+use std::cell::{Ref, RefCell};
 use std::collections::{HashMap, HashSet};
+use std::hash::{Hash, Hasher};
 use std::ops::{Deref, DerefMut};
 use std::rc::Rc;
-use std::cell::{RefCell, Ref};
-use std::hash::{Hash, Hasher};
-use anyhow::{Result, Error};
 
 #[derive(Debug, PartialEq, Eq, Clone)]
 pub enum Type {
@@ -17,58 +17,58 @@ impl Type {
     pub fn is_ptr(&self) -> bool {
         match self {
             Type::Ptr(_) => true,
-            _ => false
+            _ => false,
         }
     }
 
     pub fn is_dtype(&self) -> bool {
         match self {
             Type::DType(_) => true,
-            _ => false
+            _ => false,
         }
     }
 
     pub fn is_fn_ptr(&self) -> bool {
         match self {
             Type::Fn(_, _) => true,
-            _ => false
+            _ => false,
         }
     }
 
     pub fn is_int(&self) -> bool {
         match self {
             Type::DType(Dtype::Int) => true,
-            _ => false
+            _ => false,
         }
     }
 
     pub fn is_float(&self) -> bool {
         match self {
             Type::DType(Dtype::Float) => true,
-            _ => false
+            _ => false,
         }
     }
 
     pub fn is_bool(&self) -> bool {
         match self {
             Type::DType(Dtype::Bool) => true,
-            _ => false
+            _ => false,
         }
     }
 }
 
 #[derive(Debug, PartialEq, Eq, Clone)]
- pub enum Dtype {
+pub enum Dtype {
     Float,
     Int,
-    Bool
+    Bool,
 }
 
 #[derive(Debug, PartialEq, Clone)]
 pub enum ConstValue {
     Float(f64),
     Int(i64),
-    Bool(bool)
+    Bool(bool),
 }
 
 impl ConstValue {
@@ -123,14 +123,12 @@ impl Hash for Value {
 #[derive(Clone)]
 struct Operand(Rc<OperandImpl>);
 struct OperandImpl {
-    parent: Value
+    parent: Value,
 }
 
 impl Operand {
     fn from_value(value: Value) -> Operand {
-        Operand(Rc::new(OperandImpl {
-            parent: value
-        }))
+        Operand(Rc::new(OperandImpl { parent: value }))
     }
 
     fn type_of(&self) -> Type {
@@ -183,7 +181,6 @@ enum OpEnum {
     Yield(YieldOp),
 }
 
-
 impl OpEnum {
     fn values(&self) -> Vec<&Value> {
         match &self {
@@ -215,7 +212,7 @@ impl OpEnum {
                 if op.value.type_of() != op.result.type_of() {
                     return Err(Error::msg("ConstOp: dtype mismatch"));
                 }
-            },
+            }
             OpEnum::For(op) => {
                 if op.start.type_of() != Type::DType(Dtype::Int) {
                     return Err(Error::msg("ForOp: start is not int"));
@@ -246,21 +243,25 @@ impl OpEnum {
                             if yield_op.values.len() + 1 != op.body.arguments.len() {
                                 return Err(Error::msg("ForOp: number of yielded values mismatch"));
                             }
-                            for (value, operand) in yield_op.values.iter().zip(op.body.arguments[1..].iter()) {
+                            for (value, operand) in
+                                yield_op.values.iter().zip(op.body.arguments[1..].iter())
+                            {
                                 if value.parent_of() != operand {
-                                    return Err(Error::msg("ForOp: yielded value is not the same as block arguments"));
+                                    return Err(Error::msg(
+                                        "ForOp: yielded value is not the same as block arguments",
+                                    ));
                                 }
                             }
                         } else {
                             return Err(Error::msg("ForOp: body does not end with yield"));
                         }
-                    },
+                    }
                     None => {
                         return Err(Error::msg("ForOp: body is empty"));
                     }
                 }
                 op.body.verify()?;
-            },
+            }
             // TODO
             _ => {}
         }
@@ -283,7 +284,7 @@ fn t(a: &mut i32) {
 
 struct Block {
     arguments: Vec<Value>,
-    body: Vec<Op>
+    body: Vec<Op>,
 }
 
 impl Block {
@@ -317,11 +318,10 @@ struct ForOp {
     body: Block,
 }
 
-
 struct WhileOp {
     carried: Vec<Operand>,
     cond_region: Block,
-    body: Block
+    body: Block,
 }
 
 struct IfOp {
@@ -382,8 +382,6 @@ struct UsageAnalysis {
 //     f(op);
 // }
 
-
-
 // struct DCE {
 //     analysis: UsageAnalysis,
 //     alive: HashSet<Value>
@@ -401,7 +399,7 @@ struct UsageAnalysis {
 //                         visited.insert(op.clone());
 //                         to_visit.push(self.analysis.parent_op.get(op).unwrap().clone());
 //                     }
-                    
+
 //                 },
 //                 _ => {}
 //             }

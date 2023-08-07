@@ -1,10 +1,9 @@
-use std::rc::{Rc, Weak};
-use std::sync::Arc;
-use std::sync::atomic::{AtomicU64, Ordering};
-use std::cell::{RefCell, Ref};
+use anyhow::{Error, Result};
+use std::cell::{Ref, RefCell};
 use std::collections::HashMap;
-use anyhow::{Result, Error};
-
+use std::rc::{Rc, Weak};
+use std::sync::atomic::{AtomicU64, Ordering};
+use std::sync::Arc;
 
 #[derive(PartialEq, Eq, Clone)]
 struct Location {
@@ -23,7 +22,6 @@ impl<'a> From<std::panic::Location<'a>> for Location {
     }
 }
 
-
 pub struct ModuleBuilder {
     name: Option<String>,
     body: Vec<Op>,
@@ -38,7 +36,7 @@ impl ModuleBuilder {
     thread_local! {
         static INTRINSIC_FUNC: RefCell<HashMap<&'static str, FuncOp>> = RefCell::new(HashMap::new());
     }
-    
+
     pub fn new() -> Self {
         ModuleBuilder {
             name: None,
@@ -81,10 +79,18 @@ impl ModuleBuilder {
         let op = Op(Rc::new(OpInternal::FuncOp(func_op)));
         builder.body.push(op);
 
-        Ok(ModuleOp { name: builder.name, body: Block { ops: builder.body } })
+        Ok(ModuleOp {
+            name: builder.name,
+            body: Block { ops: builder.body },
+        })
     }
 
-    pub fn build_fn(name: &str, args: Vec<(Option<String>, Type)>, returns: Vec<(Option<String>, Type)>, scope: impl Fn(&Vec<Value>)) -> Result<Value> {
+    pub fn build_fn(
+        name: &str,
+        args: Vec<(Option<String>, Type)>,
+        returns: Vec<(Option<String>, Type)>,
+        scope: impl Fn(&Vec<Value>),
+    ) -> Result<Value> {
         Self::MODULE_BUILDER.with(|s| {
             if s.borrow().is_none() {
                 return Err(Error::msg("ModuleBuilder does not exist"));
@@ -96,19 +102,40 @@ impl ModuleBuilder {
                     }
                 }
             }
-            s.borrow_mut().as_mut().unwrap().block_stack.push(Block::new());
+            s.borrow_mut()
+                .as_mut()
+                .unwrap()
+                .block_stack
+                .push(Block::new());
             Ok(())
         })?;
-        let arguments = args.iter().map(|(name, _type)| Value::new(name.clone(), _type.clone())).collect();
-        let returns: Vec<Value> = returns.iter().map(|(name, _type)| Value::new(name.clone(), _type.clone())).collect();
+        let arguments = args
+            .iter()
+            .map(|(name, _type)| Value::new(name.clone(), _type.clone()))
+            .collect();
+        let returns: Vec<Value> = returns
+            .iter()
+            .map(|(name, _type)| Value::new(name.clone(), _type.clone()))
+            .collect();
         scope(&arguments);
         let block_body = Self::MODULE_BUILDER.with(|s| {
             if s.borrow().is_none() {
                 return Err(Error::msg("ModuleBuilder does not exist"));
             }
-            Ok(s.borrow_mut().as_mut().unwrap().block_stack.pop().ok_or(Error::msg("No block"))?)
+            Ok(s.borrow_mut()
+                .as_mut()
+                .unwrap()
+                .block_stack
+                .pop()
+                .ok_or(Error::msg("No block"))?)
         })?;
-        let func_ptr_val = Value::new(None, Type(Rc::new(TypeInternal::Fn(arguments.iter().map(|v| v._type().clone()).collect(), returns.iter().map(|v| v._type().clone()).collect()))));
+        let func_ptr_val = Value::new(
+            None,
+            Type(Rc::new(TypeInternal::Fn(
+                arguments.iter().map(|v| v._type().clone()).collect(),
+                returns.iter().map(|v| v._type().clone()).collect(),
+            ))),
+        );
         let func_op = FuncOp {
             name: name.to_string(),
             args: arguments,
@@ -123,15 +150,31 @@ impl ModuleBuilder {
         });
         Ok(func_ptr_val)
     }
-    
-    pub fn build_intrinsic_fn(name: &'static str, args: Vec<(Option<String>, Type)>, returns: Vec<(Option<String>, Type)>) -> Result<Value> {
+
+    pub fn build_intrinsic_fn(
+        name: &'static str,
+        args: Vec<(Option<String>, Type)>,
+        returns: Vec<(Option<String>, Type)>,
+    ) -> Result<Value> {
         Self::INTRINSIC_FUNC.with(|s| {
             if s.borrow().contains_key(name) {
                 return Err(Error::msg("Function already exists"));
             }
-            let arguments: Vec<Value> = args.iter().map(|(name, _type)| Value::new(name.clone(), _type.clone())).collect();
-            let returns: Vec<Value> = returns.iter().map(|(name, _type)| Value::new(name.clone(), _type.clone())).collect();
-            let func_ptr_val = Value::new(None, Type(Rc::new(TypeInternal::Fn(arguments.iter().map(|v| v._type().clone()).collect(), returns.iter().map(|v| v._type().clone()).collect()))));
+            let arguments: Vec<Value> = args
+                .iter()
+                .map(|(name, _type)| Value::new(name.clone(), _type.clone()))
+                .collect();
+            let returns: Vec<Value> = returns
+                .iter()
+                .map(|(name, _type)| Value::new(name.clone(), _type.clone()))
+                .collect();
+            let func_ptr_val = Value::new(
+                None,
+                Type(Rc::new(TypeInternal::Fn(
+                    arguments.iter().map(|v| v._type().clone()).collect(),
+                    returns.iter().map(|v| v._type().clone()).collect(),
+                ))),
+            );
             let func_op = FuncOp {
                 name: name.to_string(),
                 args: arguments,
@@ -146,9 +189,7 @@ impl ModuleBuilder {
     }
 
     pub fn get_intrinsic_fn(name: &'static str) -> Option<Value> {
-        Self::INTRINSIC_FUNC.with(|s| {
-            Some(s.borrow().get(name)?.val.clone())
-        })
+        Self::INTRINSIC_FUNC.with(|s| Some(s.borrow().get(name)?.val.clone()))
     }
 
     pub fn get_fn(name: &str) -> Option<Value> {
@@ -169,7 +210,14 @@ impl ModuleBuilder {
             if s.borrow().is_none() {
                 return Err(Error::msg("ModuleBuilder does not exist"));
             }
-            s.borrow_mut().as_mut().unwrap().block_stack.last_mut().ok_or(Error::msg("No block"))?.ops.push(op);
+            s.borrow_mut()
+                .as_mut()
+                .unwrap()
+                .block_stack
+                .last_mut()
+                .ok_or(Error::msg("No block"))?
+                .ops
+                .push(op);
             Ok(())
         })
     }
@@ -182,10 +230,7 @@ impl Value {
         Rc::ptr_eq(&self.0, &other.0)
     }
     fn new(name: Option<String>, _type: Type) -> Self {
-        Value(Rc::new(ValueInternal {
-            name,
-            _type,
-        }))
+        Value(Rc::new(ValueInternal { name, _type }))
     }
 }
 #[derive(Debug)]
@@ -199,7 +244,6 @@ impl Value {
         &self.0._type
     }
 }
-
 
 #[derive(Debug)]
 pub struct Op(Rc<OpInternal>);
@@ -215,9 +259,8 @@ pub enum OpInternal {
     FuncOp(FuncOp),
     Call(CallOp),
     Cast(CastOp),
-    Module(ModuleOp)
+    Module(ModuleOp),
 }
-
 
 #[derive(Debug)]
 pub struct ModuleOp {
@@ -228,33 +271,33 @@ pub struct ModuleOp {
 #[derive(Debug)]
 pub struct ConstantOp {
     value: Constant,
-    result: Value
+    result: Value,
 }
 
 #[derive(Debug)]
 pub struct IfOp {
     cond: Value,
     then_block: Block,
-    else_block: Block
+    else_block: Block,
 }
 
 #[derive(Debug)]
 pub struct WhileOp {
     cond: Value,
-    body: Block
+    body: Block,
 }
 #[derive(Debug)]
 pub struct ForOp {
     init: Value,
     fin: Value,
     step: Value,
-    body: Block
+    body: Block,
 }
 
 #[derive(Debug)]
 pub struct AssignOp {
     lhs: Value,
-    rhs: Value
+    rhs: Value,
 }
 
 #[derive(Debug)]
@@ -270,19 +313,19 @@ pub struct FuncOp {
 #[derive(Debug)]
 enum FuncKind {
     Def,
-    Intrinsic
+    Intrinsic,
 }
 
 #[derive(Debug)]
 pub struct YieldOp {
-    value: Vec<Value>
+    value: Vec<Value>,
 }
 
 #[derive(Debug)]
 pub struct CallOp {
     func: Value,
     args: Vec<Value>,
-    returns: Vec<Value>
+    returns: Vec<Value>,
 }
 
 #[derive(Debug)]
@@ -292,17 +335,14 @@ pub struct CastOp {
     _type: Type,
 }
 
-
 #[derive(Debug)]
 struct Block {
-    ops: Vec<Op>
+    ops: Vec<Op>,
 }
 
 impl Block {
     fn new() -> Self {
-        Block {
-            ops: vec![]
-        }
+        Block { ops: vec![] }
     }
 }
 
@@ -313,21 +353,21 @@ impl Type {
     fn is_integer(&self) -> bool {
         match &*self.0 {
             TypeInternal::Val(Dtype::Int) => true,
-            _ => false
+            _ => false,
         }
     }
 
     fn is_float(&self) -> bool {
         match &*self.0 {
             TypeInternal::Val(Dtype::Float) => true,
-            _ => false
+            _ => false,
         }
     }
 
     fn is_bool(&self) -> bool {
         match &*self.0 {
             TypeInternal::Val(Dtype::Bool) => true,
-            _ => false
+            _ => false,
         }
     }
 }
@@ -358,7 +398,7 @@ impl Constant {
 enum Dtype {
     Int,
     Float,
-    Bool
+    Bool,
 }
 
 impl Dtype {
@@ -366,7 +406,7 @@ impl Dtype {
         match self {
             Dtype::Int => 64,
             Dtype::Float => 64,
-            Dtype::Bool => 8
+            Dtype::Bool => 8,
         }
     }
 }
@@ -389,17 +429,17 @@ impl From<bool> for Constant {
     }
 }
 
-
 #[derive(Debug)]
 pub struct BinaryOp {
     lhs: Value,
     rhs: Value,
     result: Value,
-    op: BinaryOps
+    op: BinaryOps,
 }
 
 #[derive(Debug, Clone)]
-enum BinaryOps { // (lhs, rhs, result)
+enum BinaryOps {
+    // (lhs, rhs, result)
     Add,
     Sub,
     Mul,
@@ -419,15 +459,15 @@ enum BinaryOps { // (lhs, rhs, result)
 pub struct UnaryOp {
     val: Value,
     result: Value,
-    op: UnaryOps
+    op: UnaryOps,
 }
 
 #[derive(Debug, Clone)]
-enum UnaryOps { // (val, result)
+enum UnaryOps {
+    // (val, result)
     Neg,
     Not,
 }
-
 
 fn constant<T: Into<Constant>>(val: T, name: Option<&str>) -> Result<Value> {
     let constant: Constant = val.into();
@@ -435,7 +475,7 @@ fn constant<T: Into<Constant>>(val: T, name: Option<&str>) -> Result<Value> {
 
     let constant_op = ConstantOp {
         value: constant,
-        result: result.clone()
+        result: result.clone(),
     };
     ModuleBuilder::insert_op(Op(Rc::new(OpInternal::Constant(constant_op))))?;
     Ok(result)
@@ -550,11 +590,11 @@ fn constant<T: Into<Constant>>(val: T, name: Option<&str>) -> Result<Value> {
 //         }
 //         Ok(())
 //     })?;
-    
+
 //     let if_op = IfOp {
 //         cond: cond.clone(),
 //         then_block,
-//         else_block 
+//         else_block
 //     };
 //     let op = Op(Rc::new(OpInternal::If(if_op)));
 //     insert_op(op)
@@ -687,7 +727,7 @@ impl Block {
     pub fn new() -> Self {
         Block { body: vec![] }
     }
-    
+
     pub fn insert_op(&mut self, i: usize, op: Op) {
         self.body.insert(i, op);
     }
@@ -888,7 +928,7 @@ impl ModuleBuilder {
     thread_local! {
         static INTRINSIC_FUNC: RefCell<HashMap<&'static str, Arc<DeclareFnOp>>> = RefCell::new(HashMap::new());
     }
-    
+
     pub fn new() -> Self {
         ModuleBuilder {
             name: None,
@@ -934,7 +974,7 @@ impl ModuleBuilder {
 
         Ok(ModuleOp { name: builder.name, body: Block { ops: builder.body } })
     }*/
-    /* 
+    /*
     pub fn declare_fn(name: &str, args: Vec<(Option<String>, Type)>, returns: Vec<(Option<String>, Type)>, scope: impl Fn(&Vec<Value>)) -> Result<()> {
         Self::MODULE_BUILDER.with(|s| {
             if s.borrow().is_none() {
@@ -1083,7 +1123,7 @@ pub fn constant<T: Into<ConstValue>>(a: T, name: Option<&str>) -> Value {
 
 
 fn lift_values_to_boundary(scope_stack: ScopeStack, should_lift: impl Fn(&Value) -> bool) -> OperationBase {
-    let ScopeStack { 
+    let ScopeStack {
         stack, // The stack of ops defined by the inner scope
         source: sources // The source value of operands in the inner scope
     } = scope_stack;
@@ -1137,7 +1177,7 @@ fn lift_values_to_boundary(scope_stack: ScopeStack, should_lift: impl Fn(&Value)
         ModuleBuilder::remap(k, &v);
     }
 
-    
+
     todo!()
 }
 
@@ -1149,7 +1189,7 @@ pub fn for_op(init: &Value, end: &Value, step: &Value, scope: impl Fn(&Value)) {
     ModuleBuilder::new_scope();
     scope(&ind_var);
     ModuleBuilder::with_scope(|stack| {
-        let ScopeStack { 
+        let ScopeStack {
             stack, // The stack of ops defined by the inner scope
             source: sources // The source value of operands in the inner scope
         } = stack;
@@ -1244,7 +1284,5 @@ fn main() {
     //     Ok(())
     // });
 
-
     // println!("{:#?}", block);
-
 }

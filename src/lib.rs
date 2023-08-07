@@ -1,14 +1,14 @@
 use std::any::Any;
+use std::cell::{Ref, RefCell};
+use std::collections::{HashMap, HashSet};
 use std::hash::{Hash, Hasher};
 use std::sync::Arc;
-use std::collections::{HashMap, HashSet};
-use std::cell::{RefCell, Ref};
 use std::thread::Scope;
 
 use anyhow::{Error, Result};
 
-mod linear_ir;
 pub mod lang;
+mod linear_ir;
 
 struct TraitRegistry {
     trait_converters: HashMap<(std::any::TypeId, std::any::TypeId), Box<dyn Any>>,
@@ -34,7 +34,6 @@ impl TraitRegistry {
     }
 }
 
-
 pub trait AsAny {
     fn as_any(&self) -> &dyn Any;
 }
@@ -56,16 +55,19 @@ struct OpTraitRegistry {
 impl OpTraitRegistry {
     fn new() -> Self {
         OpTraitRegistry {
-            converters: HashMap::new()
+            converters: HashMap::new(),
         }
     }
 
-    fn register_trait<OP: Operation + 'static, TRAIT: 'static + ?Sized>(&mut self, f: fn(&dyn Operation) -> Option<&TRAIT>) -> Result<()> {
+    fn register_trait<OP: Operation + 'static, TRAIT: 'static + ?Sized>(
+        &mut self,
+        f: fn(&dyn Operation) -> Option<&TRAIT>,
+    ) -> Result<()> {
         let id = std::any::TypeId::of::<OP>();
         let trait_id = std::any::TypeId::of::<TRAIT>();
         println!("{:?} {:?}", id, trait_id);
         // let fbox: Box<dyn Fn(&'a dyn Operation) -> Option<&'a TRAIT> + 'static> = Box::new(f1);
-        
+
         if self.converters.contains_key(&(id, trait_id)) {
             return Err(Error::msg("Converter already registered"));
         }
@@ -77,13 +79,13 @@ impl OpTraitRegistry {
         let id = op.as_any().type_id();
         let trait_id = std::any::TypeId::of::<TRAIT>();
         println!("{:?} {:?}", id, trait_id);
-        let f = self.converters.get(&(id, trait_id))?
+        let f = self
+            .converters
+            .get(&(id, trait_id))?
             .downcast_ref::<fn(&dyn Operation) -> Option<&TRAIT>>()?;
         f(op)
     }
 }
-
-
 
 #[derive(Debug, PartialEq, Eq, Clone)]
 pub enum Type {
@@ -91,49 +93,48 @@ pub enum Type {
     Fn(Vec<Type>, Vec<Type>),
     Ptr(Dtype),
     Tensor(TensorType),
-
 }
 
 impl Type {
     pub fn is_ptr(&self) -> bool {
         match self {
             Type::Ptr(_) => true,
-            _ => false
+            _ => false,
         }
     }
 
     pub fn is_dtype(&self) -> bool {
         match self {
             Type::DType(_) => true,
-            _ => false
+            _ => false,
         }
     }
 
     pub fn is_fn_ptr(&self) -> bool {
         match self {
             Type::Fn(_, _) => true,
-            _ => false
+            _ => false,
         }
     }
 
     pub fn is_int(&self) -> bool {
         match self {
             Type::DType(Dtype::Int) => true,
-            _ => false
+            _ => false,
         }
     }
 
     pub fn is_float(&self) -> bool {
         match self {
             Type::DType(Dtype::Float) => true,
-            _ => false
+            _ => false,
         }
     }
 
     pub fn is_bool(&self) -> bool {
         match self {
             Type::DType(Dtype::Bool) => true,
-            _ => false
+            _ => false,
         }
     }
 }
@@ -142,7 +143,7 @@ impl Type {
 pub enum Dtype {
     Float,
     Int,
-    Bool
+    Bool,
 }
 
 mod mutable_ir;
@@ -151,7 +152,7 @@ mod mutable_ir;
 pub enum ConstValue {
     Float(f64),
     Int(i64),
-    Bool(bool)
+    Bool(bool),
 }
 
 #[derive(Debug, PartialEq, Eq, Clone)]
@@ -183,9 +184,10 @@ pub struct Value(Arc<ValueInternal>);
 
 impl Value {
     pub fn new(_type: Type, name: Option<String>) -> Self {
-        Value(Arc::new(
-            ValueInternal { name: name.map(|x| x.to_string()), _type }
-        ))
+        Value(Arc::new(ValueInternal {
+            name: name.map(|x| x.to_string()),
+            _type,
+        }))
     }
 
     pub fn _type(&self) -> &Type {
@@ -226,7 +228,6 @@ impl Operand {
     }
 }
 
-
 #[derive(Debug)]
 pub struct Block {
     body: Vec<Op>,
@@ -236,7 +237,7 @@ impl Block {
     pub fn new() -> Self {
         Block { body: vec![] }
     }
-    
+
     pub fn insert_op(&mut self, i: usize, op: Op) {
         self.body.insert(i, op);
     }
@@ -278,7 +279,7 @@ pub enum OpEnum {
     Slice,
     Reduce,
     ElementWise,
-    Dot
+    Dot,
 }
 
 #[derive(Debug)]
@@ -291,63 +292,63 @@ pub struct AssignOp {
 pub struct FullOp {
     shape: Vec<usize>,
     value: Operand,
-    ret: Value
+    ret: Value,
 }
 
 #[derive(Debug)]
 pub struct LoadOp {
     ptr: Operand,
     mask: Operand,
-    ret: Operand
+    ret: Operand,
 }
 
 #[derive(Debug)]
 pub struct StoreOp {
     ptr: Operand,
     mask: Operand,
-    ret: Operand
+    ret: Operand,
 }
 
 #[derive(Debug)]
 pub struct ReinterpretOp {
     value: Operand,
     _type: Type,
-    ret: Value
+    ret: Value,
 }
 
 #[derive(Debug)]
 pub struct CastOp {
     value: Operand,
     _type: Type,
-    ret: Value
+    ret: Value,
 }
 
 #[derive(Debug)]
 pub struct ReshapeOp {
     value: Operand,
     shape: Vec<usize>,
-    ret: Value
+    ret: Value,
 }
 
 #[derive(Debug)]
 pub struct TransposeOp {
     value: Operand,
     axes: Vec<usize>,
-    ret: Value
+    ret: Value,
 }
 
 #[derive(Debug)]
 pub struct ConcatOp {
     values: Vec<Operand>,
     axis: usize,
-    ret: Value
+    ret: Value,
 }
 
 #[derive(Debug)]
 pub struct BroadCastOp {
     value: Operand,
     shape: Vec<usize>,
-    ret: Value
+    ret: Value,
 }
 
 #[derive(Debug)]
@@ -355,7 +356,7 @@ pub struct SliceOp {
     value: Operand,
     start: Vec<usize>,
     end: Vec<usize>,
-    ret: Value
+    ret: Value,
 }
 
 #[derive(Debug)]
@@ -363,7 +364,7 @@ pub struct ReduceOp {
     value: Operand,
     axes: Vec<usize>,
     keep_dim: bool,
-    ret: Value
+    ret: Value,
 }
 
 // #[derive(Debug)]
@@ -376,21 +377,20 @@ pub struct ReduceOp {
 pub struct DotOp {
     lhs: Operand,
     rhs: Operand,
-    ret: Value
+    ret: Value,
 }
-
 
 #[derive(Debug)]
 pub struct ConstantOp {
     value: ConstValue,
-    ret: Value
+    ret: Value,
 }
 
 #[derive(Debug)]
 pub struct IfOp {
     cond_operand: Operand,
     then_block: Block,
-    else_block: Block
+    else_block: Block,
 }
 
 #[derive(Debug)]
@@ -414,40 +414,38 @@ pub struct DeclareFnOp {
     name: String,
     fn_type: FnType,
     body: Block,
-    fn_val: Value
+    fn_val: Value,
 }
 
 #[derive(Debug)]
 pub enum FnType {
     Intrinsic(&'static str),
-    Defined(Value)
+    Defined(Value),
 }
 
 #[derive(Debug)]
 pub enum FnKind {
     Device,
-    Host
+    Host,
 }
 
 #[derive(Debug)]
 pub struct CallOp {
     fn_type: FnType,
     args: Vec<Operand>,
-    ret: Vec<Value>
+    ret: Vec<Value>,
 }
 
 #[derive(Debug)]
 pub struct YieldOp {
-    base: Vec<Operand>
+    base: Vec<Operand>,
 }
-
 
 #[derive(Debug)]
 pub struct ModuleOp {
     name: Option<String>,
-    body: Block
+    body: Block,
 }
-
 
 #[derive(PartialEq, Eq, Clone, Debug)]
 pub struct Location {
@@ -476,7 +474,6 @@ impl<'a, 'b> From<&'b std::panic::Location<'a>> for Location {
     }
 }
 
-
 pub struct ModuleBuilder {
     name: Option<String>,
     op_stack: Vec<Vec<Op>>,
@@ -501,7 +498,12 @@ impl ModuleBuilder {
 
     pub fn push_op(op: Op) -> Result<()> {
         Self::MODULE_BUILDER.with(|builder| {
-            builder.borrow_mut().op_stack.last_mut().ok_or(Error::msg("No block to push op to"))?.push(op);
+            builder
+                .borrow_mut()
+                .op_stack
+                .last_mut()
+                .ok_or(Error::msg("No block to push op to"))?
+                .push(op);
             Ok(())
         })
     }
@@ -510,7 +512,13 @@ impl ModuleBuilder {
         Self::MODULE_BUILDER.with(|builder| {
             builder.borrow_mut().op_stack.push(vec![]);
             scope()?;
-            let block = Block { body: builder.borrow_mut().op_stack.pop().ok_or(Error::msg("failed to pop block"))? };
+            let block = Block {
+                body: builder
+                    .borrow_mut()
+                    .op_stack
+                    .pop()
+                    .ok_or(Error::msg("failed to pop block"))?,
+            };
             Ok(block)
         })
     }
@@ -521,10 +529,15 @@ impl ModuleBuilder {
             let old = builder.replace(self);
             scope()?;
             let mut orig = builder.replace(old);
-            let block = Block { body: orig.op_stack.pop().ok_or(Error::msg("failed to pop block"))? };
+            let block = Block {
+                body: orig
+                    .op_stack
+                    .pop()
+                    .ok_or(Error::msg("failed to pop block"))?,
+            };
             Ok(ModuleOp {
                 name: orig.name,
-                body: block
+                body: block,
             })
         })
     }
@@ -534,12 +547,12 @@ fn make_binary_op(loc: Location, op: &'static str, a: &Value, b: &Value) -> Resu
     let op = CallOp {
         fn_type: FnType::Intrinsic(op),
         args: vec![Operand::new_from(a), Operand::new_from(b)],
-        ret: vec![Value::new(a._type().clone(), None)]
+        ret: vec![Value::new(a._type().clone(), None)],
     };
     let val = op.ret[0].clone();
     let op = Op {
         op: Box::new(OpEnum::Call(op)),
-        location: loc
+        location: loc,
     };
     ModuleBuilder::push_op(op)?;
     Ok(val)
@@ -549,12 +562,12 @@ pub fn cast(a: &Value, _type: &Type) -> Result<Value> {
     match _type {
         Type::Fn(_, _) => {
             return Err(Error::msg("Can't cast to function pointer"));
-        },
+        }
         Type::Ptr(_) => {
             if !(a._type().is_ptr() || a._type().is_int()) {
                 return Err(Error::msg("Can only cast pointer to pointer or int"));
             }
-        },
+        }
         _ => {}
     }
 
@@ -562,18 +575,16 @@ pub fn cast(a: &Value, _type: &Type) -> Result<Value> {
     let op = CallOp {
         fn_type: FnType::Intrinsic("cast"),
         args: vec![Operand::new_from(a)],
-        ret: vec![Value::new(_type.clone(), None)]
+        ret: vec![Value::new(_type.clone(), None)],
     };
     let val = op.ret[0].clone();
     let op = Op {
         op: Box::new(OpEnum::Call(op)),
-        location: loc
+        location: loc,
     };
     ModuleBuilder::push_op(op)?;
     Ok(val)
 }
-
-
 
 pub fn add(a: &Value, b: &Value) -> Result<Value> {
     let loc: Location = std::panic::Location::caller().into();
@@ -625,12 +636,12 @@ pub fn eq(a: &Value, b: &Value) -> Result<Value> {
     let op = CallOp {
         fn_type: FnType::Intrinsic("eq"),
         args: vec![Operand::new_from(a), Operand::new_from(b)],
-        ret: vec![Value::new(Type::DType(Dtype::Bool), None)]
+        ret: vec![Value::new(Type::DType(Dtype::Bool), None)],
     };
     let val = op.ret[0].clone();
     let op = Op {
         op: Box::new(OpEnum::Call(op)),
-        location: loc
+        location: loc,
     };
     ModuleBuilder::push_op(op)?;
     Ok(val)
@@ -646,12 +657,12 @@ pub fn gt(a: &Value, b: &Value) -> Result<Value> {
     let op = CallOp {
         fn_type: FnType::Intrinsic("gt"),
         args: vec![Operand::new_from(a), Operand::new_from(b)],
-        ret: vec![Value::new(Type::DType(Dtype::Bool), None)]
+        ret: vec![Value::new(Type::DType(Dtype::Bool), None)],
     };
     let val = op.ret[0].clone();
     let op = Op {
         op: Box::new(OpEnum::Call(op)),
-        location: loc
+        location: loc,
     };
     ModuleBuilder::push_op(op)?;
     Ok(val)
@@ -667,38 +678,44 @@ pub fn geq(a: &Value, b: &Value) -> Result<Value> {
     let op = CallOp {
         fn_type: FnType::Intrinsic("geq"),
         args: vec![Operand::new_from(a), Operand::new_from(b)],
-        ret: vec![Value::new(Type::DType(Dtype::Bool), None)]
+        ret: vec![Value::new(Type::DType(Dtype::Bool), None)],
     };
     let val = op.ret[0].clone();
     let op = Op {
         op: Box::new(OpEnum::Call(op)),
-        location: loc
+        location: loc,
     };
     ModuleBuilder::push_op(op)?;
     Ok(val)
 }
 
-
 pub fn constant<T: Into<ConstValue>>(value: T) -> Result<Value> {
     let loc: Location = std::panic::Location::caller().into();
     let value = value.into();
-    let ret = Value::new(Type::DType(match value {
-        ConstValue::Float(_) => Dtype::Float,
-        ConstValue::Int(_) => Dtype::Int,
-        ConstValue::Bool(_) => Dtype::Bool
-    }), None);
+    let ret = Value::new(
+        Type::DType(match value {
+            ConstValue::Float(_) => Dtype::Float,
+            ConstValue::Int(_) => Dtype::Int,
+            ConstValue::Bool(_) => Dtype::Bool,
+        }),
+        None,
+    );
     let op = Op {
         op: Box::new(OpEnum::Constant(ConstantOp {
             value,
-            ret: ret.clone()
+            ret: ret.clone(),
         })),
-        location: loc
+        location: loc,
     };
     ModuleBuilder::push_op(op)?;
     Ok(ret)
 }
 
-pub fn if_op(cond: &Value, if_body: impl Fn() -> Result<()>, else_body: impl Fn() -> Result<()>) -> Result<()> {
+pub fn if_op(
+    cond: &Value,
+    if_body: impl Fn() -> Result<()>,
+    else_body: impl Fn() -> Result<()>,
+) -> Result<()> {
     let loc: Location = std::panic::Location::caller().into();
     let if_body = ModuleBuilder::with_scope(if_body)?;
     let else_body = ModuleBuilder::with_scope(else_body)?;
@@ -706,14 +723,19 @@ pub fn if_op(cond: &Value, if_body: impl Fn() -> Result<()>, else_body: impl Fn(
         op: Box::new(OpEnum::If(IfOp {
             cond_operand: Operand::new_from(cond),
             then_block: if_body,
-            else_block: else_body
+            else_block: else_body,
         })),
-        location: loc
+        location: loc,
     };
     ModuleBuilder::push_op(op)
 }
 
-pub fn for_op(start: &Value, end: &Value, step: &Value, body: impl Fn(&Value) -> Result<()>) -> Result<()> {
+pub fn for_op(
+    start: &Value,
+    end: &Value,
+    step: &Value,
+    body: impl Fn(&Value) -> Result<()>,
+) -> Result<()> {
     let loc: Location = std::panic::Location::caller().into();
     let ind_var = Value::new(Type::DType(Dtype::Int), None);
     let body = ModuleBuilder::with_scope(|| body(&ind_var))?;
@@ -723,33 +745,33 @@ pub fn for_op(start: &Value, end: &Value, step: &Value, body: impl Fn(&Value) ->
             end_operand: Operand::new_from(end),
             step_operand: Operand::new_from(step),
             ind_var,
-            body
+            body,
         })),
-        location: loc
+        location: loc,
     };
     ModuleBuilder::push_op(op)
 }
-
-
 
 #[test]
 fn test_construction() {
     let module = ModuleBuilder::new()
         .name("TestModule".to_string())
         .build_module(|| {
-        let a = constant(1.0)?;
-        let b = constant(2.0)?;
-        let c = constant(true)?;
-        if_op(&c, || {
-            for_op(&a, &b, &constant(1)?, |ind_var| {
-                println!("{:?}", ind_var);
-                Ok(())
-            })
-        }, || {
+            let a = constant(1.0)?;
+            let b = constant(2.0)?;
+            let c = constant(true)?;
+            if_op(
+                &c,
+                || {
+                    for_op(&a, &b, &constant(1)?, |ind_var| {
+                        println!("{:?}", ind_var);
+                        Ok(())
+                    })
+                },
+                || Ok(()),
+            )?;
             Ok(())
-        })?;
-        Ok(())
-    });
+        });
 
     println!("{:#?}", module);
 }
