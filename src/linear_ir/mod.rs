@@ -181,10 +181,9 @@ impl OperationBase {
     }
 }
 
-pub enum ArgumentSemantic {
-    Move,
-    Ref, // immutable reference
-         // we do not allow mutable references, as they are equivalent to move and return
+pub enum Operand {
+    Move(Value),
+    Read(Value),
 }
 
 pub struct Op;

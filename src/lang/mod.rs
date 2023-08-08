@@ -41,7 +41,8 @@ impl<'a, 'b> From<&'b std::panic::Location<'a>> for Location {
 #[derive(Clone, Eq, PartialEq, Debug)]
 pub struct Type {
     eltype: ElType,
-    shape: Vec<usize>, // todo: Encoding
+    shape: Vec<usize>, 
+    // todo: Encoding
 }
 
 impl Type {
@@ -68,15 +69,25 @@ impl Type {
         Type::scalar(ElType::Ptr(Dtype::F32))
     }
 
-    pub fn tensor(eltype: ElType, shape: &[usize]) -> Self {
-        Type {
-            eltype,
-            shape: shape.into(),
+    pub fn is_bool(&self) -> bool {
+        match &self.eltype {
+            ElType::Val(Dtype::I1) => true,
+            _ => false,
         }
     }
 
-    pub fn rank(&self) -> usize {
-        self.shape.len()
+    pub fn is_float(&self) -> bool {
+        match &self.eltype {
+            ElType::Val(Dtype::F32) => true,
+            _ => false,
+        }
+    }
+
+    pub fn is_int(&self) -> bool {
+        match &self.eltype {
+            ElType::Val(Dtype::I32) => true,
+            _ => false,
+        }
     }
 
     pub fn is_scalar(&self) -> bool {
@@ -88,6 +99,17 @@ impl Type {
             ElType::Ptr(_) => true,
             _ => false,
         }
+    }
+
+    pub fn tensor(eltype: ElType, shape: &[usize]) -> Self {
+        Type {
+            eltype,
+            shape: shape.into(),
+        }
+    }
+
+    pub fn rank(&self) -> usize {
+        self.shape.len()
     }
 
     pub fn shape(&self) -> &[usize] {
@@ -192,12 +214,14 @@ impl AST {
 
 #[derive(Debug)]
 pub enum Stmt {
+    Function(Function),
     For(Value, Value, Value, Value, Vec<AST>), // induction_var, start, end, step, body
     While(Value, Vec<AST>),                    // condition, body
     If(Value, Vec<AST>, Vec<AST>),             // condition, then, else
     Assign(Value, Value),                      // lhs, rhs
     Return(Vec<Value>),
     Break,
+    Continue
 }
 
 impl Stmt {
@@ -219,12 +243,430 @@ pub enum Ops {
     Expand(Value, usize, Value),              // input, dim, output
     Broadcast(Value, Value, Value),         // input, other, output
 
-    Reduce(Value, usize, ReduceOp, Value), // input, dims, op, output
+    Reduce(Value, usize, ReduceOpOption, Value), // input, dims, op, output
     ElementWise(ElementWiseFn),          // for extensibility reasons
     Dot(Value, Value, Value),            // a @ b = c
 
     Full(Constant, Value),   // const_value, output
     Arange(i32, i32, Value), // begin, end, output
+}
+
+pub struct LoadOp {
+    ptr: Value,
+    mask: Option<Value>,
+    value: Option<Value>,
+    output: Value,
+}
+
+impl LoadOp {
+    pub fn build(ptr: &Value, mask: Option<&Value>, value: Option<&Value>) -> Result<Self> {
+        let val = Value::new(ptr.type_of().to_value());
+        Ok(LoadOp {
+            ptr: ptr.clone(),
+            mask: mask.cloned(),
+            value: value.cloned(),
+            output: val.clone(),
+        })
+    }
+}
+
+pub struct StoreOp {
+    ptr: Value,
+    value: Value,
+    mask: Option<Value>,
+}
+
+impl StoreOp {
+    pub fn build(ptr: &Value, value: &Value, mask: Option<&Value>) -> Result<Self> {
+        Ok(StoreOp {
+            ptr: ptr.clone(),
+            value: value.clone(),
+            mask: mask.cloned(),
+        })
+    }
+}
+
+pub struct ReshapeOp {
+    input: Value,
+    shape: Vec<usize>,
+    output: Value,
+}
+
+impl ReshapeOp {
+    fn get_reshape_output_shape(ishape: &[usize], shape: &[i32]) -> Result<Vec<usize>> {
+        if shape.iter().filter(|x| **x < -1 || **x == 0).count() > 0 {
+            return Err(Error::msg(
+                "shape cannot contain any negative values (other than -1) or zeros",
+            ));
+        }
+        let neg_count = shape.iter().filter(|x| **x == -1).count();
+        if neg_count > 1 {
+            return Err(Error::msg("shape cannot contain more than one -1"));
+        }
+        let prod_wo_neg = shape
+            .iter()
+            .filter(|x| **x > 0)
+            .fold(1, |x, y| x * (*y) as usize);
+        let prod_in = ishape.iter().fold(1, |x, y| x * *y);
+        if (neg_count == 0 && prod_in != prod_wo_neg) || prod_in % prod_wo_neg != 0 {
+            return Err(Error::msg(format!(
+                "cannot reshape tensor of size {:?} into shape {:?}",
+                ishape, shape
+            )));
+        }
+        let oshape = shape
+            .iter()
+            .map(|x| {
+                if *x == -1 {
+                    prod_in / prod_wo_neg
+                } else {
+                    *x as usize
+                }
+            })
+            .collect::<Vec<_>>();
+        Ok(oshape)
+    }
+
+    pub fn build(input: &Value, shape: &[i32]) -> Result<Self> {
+        let oshape = ReshapeOp::get_reshape_output_shape(input.type_of().shape(), shape)?;
+        let val = Value::new(Type::tensor(input.type_of().eltype.clone(), &oshape));
+        Ok(ReshapeOp {
+            input: input.clone(),
+            shape: oshape,
+            output: val.clone(),
+        })
+    }
+}
+
+pub struct PermuteOp {
+    input: Value,
+    permutation: Vec<usize>,
+    output: Value,
+}
+
+impl PermuteOp {
+    fn get_permute_output_shape(ishape: &[usize], permute: &[u32]) -> Result<Vec<usize>> {
+        let mut perm: Vec<_> = permute.into();
+        perm.sort();
+        for (i, p) in (0..ishape.len()).zip(perm) {
+            if i != p as usize {
+                return Err(Error::msg(format!(
+                    "Invalid permutation indicies, got {:?}",
+                    permute
+                )));
+            }
+        }
+        let out = permute.iter().map(|x| ishape[*x as usize]).collect();
+        Ok(out)
+    }
+
+    pub fn build(input: &Value, permutation: &[u32]) -> Result<Self> {
+        let oshape =
+            PermuteOp::get_permute_output_shape(input.type_of().shape(), permutation)?;
+        let val = Value::new(Type::tensor(input.type_of().eltype.clone(), &oshape));
+        Ok(PermuteOp {
+            input: input.clone(),
+            permutation: permutation.iter().map(|x| *x as usize).collect(),
+            output: val.clone(),
+        })
+    }
+}
+
+pub struct SliceOp {
+    input: Value,
+    slices: Vec<Range<usize>>,
+    output: Value,
+}
+
+impl SliceOp {
+    fn get_slice_output_shape(
+        ishape: &[usize],
+        slices: &[Range<i32>],
+    ) -> Result<(Vec<usize>, Vec<Range<usize>>)> {
+        if slices.len() > ishape.len() {
+            return Err(Error::msg(
+                "Number of slice dimensions must be equal or smaller 
+                than the number of actual dimensions"));
+        }
+        let mut oshape = vec![];
+        let mut oslice = vec![];
+        for (os, slice) in ishape.iter().zip(slices) {
+            if slice.end + (*os as i32) <= 0 || slice.start < 0 {
+                return Err(Error::msg("slice error"));
+            }
+            let upper = if slice.end < 0 {
+                ((*os) as i32 + slice.end) as usize
+            } else {
+                slice.end as usize
+            };
+            let lower = slice.start as usize;
+            if upper < lower {
+                return Err(Error::msg("slice error"));
+            }
+            let new_shape = upper - lower;
+            if new_shape > 0 {
+                oshape.push(new_shape)
+            }
+            oslice.push(lower..upper);
+        }
+        Ok((oshape, oslice))
+    }
+
+    /// Range: a..b
+    /// RangeTo: 0..b
+    /// RangeFrom: a..-1
+    /// RangeFull: 0..-1
+    /// Index and remove dim: a..a
+    pub fn build(input: &Value, slices: &[Range<i32>]) -> Result<Self> {
+        let (oshape, oslice) =
+            SliceOp::get_slice_output_shape(input.type_of().shape(), slices)?;
+
+        let val = Value::new(Type::tensor(input.type_of().eltype.clone(), &oshape));
+        Ok(SliceOp {
+            input: input.clone(),
+            slices: oslice,
+            output: val.clone(),
+        })
+    }
+}
+
+pub struct ExpandOp {
+    input: Value,
+    dim: usize,
+    output: Value,
+}
+
+impl ExpandOp {
+    pub fn build(input: &Value, dim: i32) -> Result<Self> {
+        let res_dim = if dim < 0 {
+            input.type_of().rank() as i32 + dim + 1
+        } else {
+            dim
+        };
+        if res_dim < 0 || res_dim > input.type_of().rank() as i32 {
+            return Err(Error::msg(format!(
+                "Invalid expand dimension, got {}",
+                dim
+            )));
+        }
+        let mut oshape = input.type_of().shape().to_vec();
+        oshape.insert(res_dim as usize, 1);
+        let val = Value::new(Type::tensor(input.type_of().eltype.clone(), &oshape));
+        Ok(ExpandOp {
+            input: input.clone(),
+            dim: res_dim as usize,
+            output: val.clone(),
+        })
+    }
+}
+
+pub struct BroadcastOp {
+    input: Value,
+    other: Value,
+    output: Value,
+}
+
+impl BroadcastOp {
+    fn broad_cast_shape(a: &[usize], b: &[usize]) -> Result<Vec<usize>> {
+        if b.len() > a.len() {
+            return FunctionBuilder::broad_cast_shape(b, a);
+        }
+        let mut oshape = vec![];
+        for (x, y) in a.iter().zip(b.iter()) {
+            if *x == *y {
+                oshape.push(*x);
+            } else if *x == 1 {
+                oshape.push(*y);
+            } else if *y == 1 {
+                oshape.push(*x);
+            } else {
+                return Err(Error::msg(format!(
+                    "Cannot broadcast shapes {:?} and {:?}",
+                    a, b
+                )));
+            }
+        }
+        for x in a.iter().skip(b.len()) {
+            oshape.push(*x);
+        }
+        Ok(oshape)
+    }
+
+    pub fn build(input: &Value, other: &Value) -> Result<Self> {
+        let shape = BroadcastOp::broad_cast_shape(
+            input.type_of().shape(),
+            other.type_of().shape(),
+        )?;
+        let val = Value::new(Type::tensor(input.type_of().eltype.clone(), &shape));
+        Ok(BroadcastOp {
+            input: input.clone(),
+            other: other.clone(),
+            output: val.clone(),
+        })
+    }
+}
+
+pub struct ReduceOp {
+    input: Value,
+    dim: usize,
+    op: ReduceOpOption,
+    output: Value,
+}
+
+impl ReduceOp {
+    pub fn build(input: &Value, dim: i32, op: ReduceOpOption) -> Result<Self> {
+        let reduce_dim = if dim < 0 {
+            input.type_of().rank() as i32 + dim
+        } else {
+            dim
+        };
+        if reduce_dim < 0 || reduce_dim >= input.type_of().rank() as i32 {
+            return Err(Error::msg(format!(
+                "Invalid reduce dimension, got {} with input shape {:?}",
+                dim, input.type_of().shape()
+            )));
+        }
+        let val = Value::new(Type::tensor(
+            input.type_of().eltype.clone(),
+            &input
+                .type_of()
+                .shape()
+                .iter()
+                .enumerate()
+                .filter(|(i, _)| *i != dim as usize)
+                .map(|(_, x)| *x)
+                .collect::<Vec<_>>(),
+        ));
+        Ok(ReduceOp {
+            input: input.clone(),
+            dim: dim as usize,
+            op,
+            output: val.clone(),
+        })
+    }
+}
+
+pub struct DotOp {
+    a: Value,
+    b: Value,
+    output: Value,
+}
+
+impl DotOp {
+    pub fn build(a: &Value, b: &Value) -> Result<Self> {
+        if a.type_of().rank() != 2 || b.type_of().rank() != 2 {
+            return Err(Error::msg(format!(
+                "Dot product requires both inputs to be matrices, got {:?} and {:?}",
+                a.type_of(),
+                b.type_of()
+            )));
+        }
+        if a.type_of().eltype != b.type_of().eltype {
+            return Err(Error::msg(format!(
+                "Dot product requires both inputs to have the same element type, got {:?} and {:?}",
+                a.type_of(),
+                b.type_of()
+            )));
+        }
+        let val = Value::new(Type::tensor(
+            a.type_of().eltype.clone(),
+            &vec![a.type_of().shape()[0], b.type_of().shape()[1]],
+        ));
+        Ok(DotOp {
+            a: a.clone(),
+            b: b.clone(),
+            output: val.clone(),
+        })
+    }
+}
+
+pub struct ElementWiseOp {
+    pub name: String,
+    pub args: Vec<Value>,
+    pub output: Value,
+}
+
+impl ElementWiseOp {
+    pub fn build(name: impl Into<String>, args: &[Value]) -> Result<Self> {
+        let repr_arg = args.first().ok_or(Error::msg("args cannot be empty"))?;
+        let oshape = repr_arg.type_of().shape().to_vec();
+        for s in args.iter().skip(1).map(|x| x.type_of().shape()) {
+            if s != oshape {
+                return Err(Error::msg(format!(
+                    "Elementwise operation requires all arguments to have the same shape, got {:?} and {:?}",
+                    oshape, s
+                )));
+            }
+        }
+        let val = Value::new(Type::tensor(
+            repr_arg.type_of().eltype.clone(),
+            &oshape,
+        ));
+        Ok(ElementWiseOp {
+            name: name.into(),
+            args: args.into(),
+            output: val.clone(),
+        })
+    }
+
+    // arith
+    pub fn add(a: &Value, b: &Value) -> Result<Self> {
+        if a.type_of() != b.type_of() && !(a.type_of().is_int() || a.type_of().is_float()) {
+            return Err(Error::msg(format!(
+                "add requires both inputs to have the same element type and either floating or integral, got {:?} and {:?}",
+                a.type_of(),
+                b.type_of()
+            )));
+        }
+        ElementWiseOp::build("add", &[a.clone(), b.clone()])
+    }
+
+    // TODO:
+    // arith: sub, mul, div, neg, rem
+    // floating: pow, exp, log, sqrt, etc.
+    // comparison: eq, ne, lt, gt, le, ge
+    // logical: and, or, xor, not
+    
+}
+
+pub struct FullOp {
+    const_value: Constant,
+    output: Value,
+}
+
+impl FullOp {
+    pub fn build(value: impl Into<Constant>, shape: &[usize]) -> Self {
+        let c: Constant = value.into();
+        let ctype = Type::tensor(ElType::Val(c.dtype()), shape);
+        let val = Value::new(ctype);
+        FullOp {
+            const_value: c,
+            output: val.clone(),
+        }
+    }
+}
+
+pub struct ArangeOp {
+    begin: i32,
+    end: i32,
+    output: Value,
+}
+
+impl ArangeOp {
+    pub fn build(begin: i32, end: i32) -> Result<Self> {
+        if begin >= end {
+            return Err(Error::msg(format!(
+                "begin must be less than end, got {} and {}",
+                begin, end
+            )));
+        }
+        let val = Value::new(Type::tensor(ElType::Val(Dtype::I32), &[(end - begin) as usize]));
+        Ok(ArangeOp {
+            begin,
+            end,
+            output: val.clone(),
+        })
+    }
 }
 
 impl Ops {
@@ -234,7 +676,7 @@ impl Ops {
 }
 
 #[derive(Debug)]
-pub enum ReduceOp {
+pub enum ReduceOpOption {
     Sum,
     Prod,
     Min,
@@ -534,7 +976,7 @@ impl FunctionBuilder {
         Ok(val)
     }
 
-    pub fn reduce(&mut self, input: &Value, dim: i32, op: ReduceOp) -> Result<Value> {
+    pub fn reduce(&mut self, input: &Value, dim: i32, op: ReduceOpOption) -> Result<Value> {
         let loc = std::panic::Location::caller().into();
         let reduce_dim = if dim < 0 {
             input.type_of().rank() as i32 + dim
@@ -810,10 +1252,84 @@ impl FunctionBuilder {
         Ok(())
     }
 
-    pub fn build(self) -> Result<Function> {
-        todo!()
+    pub fn visit_terminals(ast: &AST, f: &mut impl FnMut(&AST)) { 
+        // if not &mut then f will raise a recursion error in memorization
+        // as inner recursive functions needs to be &mut f
+        match ast {
+            AST::Op(_, _) => f(ast),
+            AST::Stmt(stmt, _) => match stmt {
+                Stmt::For(_, _, _, _, body) => {
+                    for ast in body {
+                        FunctionBuilder::visit_terminals(ast, f);
+                    }
+                }
+                Stmt::While(_, body) => {
+                    for ast in body {
+                        FunctionBuilder::visit_terminals(ast, f);
+                    }
+                }
+                Stmt::If(_, then, else_) => {
+                    for ast in then {
+                        FunctionBuilder::visit_terminals(ast, f);
+                    }
+                    for ast in else_ {
+                        FunctionBuilder::visit_terminals(ast, f);
+                    }
+                }
+                Stmt::Assign(_, _) => f(ast),
+                Stmt::Return(_) => f(ast),
+                Stmt::Break => f(ast),
+                Stmt::Continue => f(ast),
+                Stmt::Function(func) => {
+                    for ast in &func.body {
+                        FunctionBuilder::visit_terminals(ast, f);
+                    }
+                },
+            },
+        }
+    }
+
+    fn verify_function_return(body: &Vec<AST>) -> Result<Vec<Type>> {
+        let mut returns = Ok(vec![]);
+        let mut seen = false;
+        for node in body {
+            Self::visit_terminals(node, &mut |node| {
+                if let AST::Stmt(Stmt::Return(values), _) = node {
+                    if !seen && returns.is_ok() {
+                        let types = values.iter().map(|x| x.type_of().clone()).collect();
+                        returns = Ok(types);
+                        seen = true;
+                    } else if seen && returns.is_ok() {
+                        let types: Vec<_> = values.iter().map(|x| x.type_of().clone()).collect();
+                        if returns.as_ref().unwrap() != &types {
+                            returns = Err(Error::msg(format!(
+                                "Return types mismatch, got {:?} and {:?}",
+                                returns.as_ref().unwrap(),
+                                types
+                            )));
+                        }
+                    }
+                }
+            });
+        }
+        returns
+    }
+
+    pub fn build(mut self) -> Result<Function> {
+        if self.scope.len() != 1 {
+            return Err(Error::msg("Internal error, scope should only have one element"));
+        }
+        
+        Ok(Function {
+            name: self.name,
+            args: self.args,
+            returns: Self::verify_function_return(self.scope.last().unwrap())?,
+            body: self.scope.pop().unwrap(),
+        })
     }
 }
+
+
 
 #[test]
 fn test_softmax() -> Result<()> {
@@ -831,7 +1347,7 @@ fn test_softmax() -> Result<()> {
 
     let x = builder.load(&load_ptr, Some(&mask), None)?;
     let x = builder.exp(&x)?;
-    let sum = builder.reduce(&x, 0, ReduceOp::Sum)?;
+    let sum = builder.reduce(&x, 0, ReduceOpOption::Sum)?;
     let x = builder.div(&x, &sum)?;
 
     let write_ptr = builder.add(&y_ptr, &idx)?;
