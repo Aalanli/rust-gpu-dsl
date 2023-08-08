@@ -195,21 +195,8 @@ impl From<bool> for Constant {
 
 #[derive(Debug)]
 pub enum AST {
-    Op(Ops, Location),
+    Op(OpEnum, Location),
     Stmt(Stmt, Location),
-}
-
-impl AST {
-    pub fn verify(&self) -> Result<()> {
-        match self {
-            AST::Op(op, loc) => op
-                .verify()
-                .context(format!("at {}:{}:{}", loc.file, loc.row, loc.col)),
-            AST::Stmt(stmt, loc) => stmt
-                .verify()
-                .context(format!("at {}:{}:{}", loc.file, loc.row, loc.col)),
-        }
-    }
 }
 
 #[derive(Debug)]
@@ -231,26 +218,94 @@ impl Stmt {
 }
 
 #[derive(Debug)]
-pub enum Ops {
-    ProgramID(Value), // output
+pub enum OpEnum {
+    ProgramID(ProgramIDOp), // output
 
-    Load(Value, Option<Value>, Option<Value>, Value), // ptr, mask, value, output
-    Store(Value, Value, Option<Value>),               // ptr, value, mask
+    Load(LoadOp), // ptr, mask, value, output
+    Store(StoreOp),               // ptr, value, mask
 
-    Reshape(Value, Vec<usize>, Value),      // input, shape, output
-    Permute(Value, Vec<usize>, Value),      // input, permutation, output
-    Slice(Value, Vec<Range<usize>>, Value), // input, (begin, end), output
-    Expand(Value, usize, Value),              // input, dim, output
-    Broadcast(Value, Value, Value),         // input, other, output
+    Reshape(ReshapeOp),      // input, shape, output
+    Permute(PermuteOp),      // input, permutation, output
+    Slice(SliceOp), // input, (begin, end), output
+    Expand(ExpandOp),              // input, dim, output
+    Broadcast(BroadcastOp),         // input, other, output
 
-    Reduce(Value, usize, ReduceOpOption, Value), // input, dims, op, output
-    ElementWise(ElementWiseFn),          // for extensibility reasons
-    Dot(Value, Value, Value),            // a @ b = c
+    Reduce(ReduceOp), // input, dims, op, output
+    ElementWise(ElementWiseOp),          // for extensibility reasons
+    Dot(DotOp),            // a @ b = c
 
-    Full(Constant, Value),   // const_value, output
-    Arange(i32, i32, Value), // begin, end, output
+    Full(FullOp),   // const_value, output
+    Arange(ArangeOp), // begin, end, output
 }
 
+impl OpEnum {
+    pub fn inputs(&self) -> Vec<&Value> {
+        match self {
+            Self::ProgramID(op) => vec![],
+            Self::Load(op) => { 
+                let mut output = vec![&op.ptr];
+                if let Some(mask) = &op.mask {
+                    output.push(mask);
+                }
+                if let Some(value) = &op.value {
+                    output.push(value);
+                }
+                output
+            },
+
+            Self::Store(op) => {
+                let mut output = vec![&op.ptr, &op.value];
+                if let Some(mask) = &op.mask {
+                    output.push(mask);
+                }
+                output
+            },
+
+            Self::Reshape(op) => vec![&op.input],
+            Self::Permute(op) => vec![&op.input],
+            Self::Slice(op) => vec![&op.input],
+            Self::Expand(op) => vec![&op.input],
+            Self::Broadcast(op) => vec![&op.input, &op.other],
+            Self::Reduce(op) => vec![&op.input],
+            Self::ElementWise(op) => op.args.iter().collect(),
+            Self::Dot(op) => vec![&op.a, &op.b],
+            Self::Full(op) => vec![],
+            Self::Arange(op) => vec![],
+        }
+    }
+
+    pub fn outputs(&self) -> Vec<&Value> {
+        match self {
+            Self::ProgramID(op) => vec![&op.output],
+            Self::Load(op) => vec![&op.output],
+            Self::Store(op) => vec![],
+            Self::Reshape(op) => vec![&op.output],
+            Self::Permute(op) => vec![&op.output],
+            Self::Slice(op) => vec![&op.output],
+            Self::Expand(op) => vec![&op.output],
+            Self::Broadcast(op) => vec![&op.output],
+            Self::Reduce(op) => vec![&op.output],
+            Self::ElementWise(op) => vec![&op.output],
+            Self::Dot(op) => vec![&op.output],
+            Self::Full(op) => vec![&op.output],
+            Self::Arange(op) => vec![&op.output],
+        }
+    }
+}
+
+#[derive(Debug)]
+pub struct ProgramIDOp {
+    output: Value,
+}
+
+impl ProgramIDOp {
+    pub fn build() -> Self {
+        let val = Value::new(Type::scalar(ElType::Val(Dtype::I32)));
+        ProgramIDOp { output: val.clone() }
+    }
+}
+
+#[derive(Debug)]
 pub struct LoadOp {
     ptr: Value,
     mask: Option<Value>,
@@ -270,6 +325,7 @@ impl LoadOp {
     }
 }
 
+#[derive(Debug)]
 pub struct StoreOp {
     ptr: Value,
     value: Value,
@@ -284,8 +340,10 @@ impl StoreOp {
             mask: mask.cloned(),
         })
     }
+
 }
 
+#[derive(Debug)]
 pub struct ReshapeOp {
     input: Value,
     shape: Vec<usize>,
@@ -338,6 +396,7 @@ impl ReshapeOp {
     }
 }
 
+#[derive(Debug)]
 pub struct PermuteOp {
     input: Value,
     permutation: Vec<usize>,
@@ -372,6 +431,7 @@ impl PermuteOp {
     }
 }
 
+#[derive(Debug)]
 pub struct SliceOp {
     input: Value,
     slices: Vec<Range<usize>>,
@@ -430,6 +490,7 @@ impl SliceOp {
     }
 }
 
+#[derive(Debug)]
 pub struct ExpandOp {
     input: Value,
     dim: usize,
@@ -460,6 +521,7 @@ impl ExpandOp {
     }
 }
 
+#[derive(Debug)]
 pub struct BroadcastOp {
     input: Value,
     other: Value,
@@ -469,7 +531,7 @@ pub struct BroadcastOp {
 impl BroadcastOp {
     fn broad_cast_shape(a: &[usize], b: &[usize]) -> Result<Vec<usize>> {
         if b.len() > a.len() {
-            return FunctionBuilder::broad_cast_shape(b, a);
+            return Self::broad_cast_shape(b, a);
         }
         let mut oshape = vec![];
         for (x, y) in a.iter().zip(b.iter()) {
@@ -506,6 +568,7 @@ impl BroadcastOp {
     }
 }
 
+#[derive(Debug)]
 pub struct ReduceOp {
     input: Value,
     dim: usize,
@@ -546,6 +609,7 @@ impl ReduceOp {
     }
 }
 
+#[derive(Debug)]
 pub struct DotOp {
     a: Value,
     b: Value,
@@ -580,6 +644,7 @@ impl DotOp {
     }
 }
 
+#[derive(Debug)]
 pub struct ElementWiseOp {
     pub name: String,
     pub args: Vec<Value>,
@@ -629,6 +694,7 @@ impl ElementWiseOp {
     
 }
 
+#[derive(Debug)]
 pub struct FullOp {
     const_value: Constant,
     output: Value,
@@ -646,6 +712,7 @@ impl FullOp {
     }
 }
 
+#[derive(Debug)]
 pub struct ArangeOp {
     begin: i32,
     end: i32,
@@ -669,11 +736,6 @@ impl ArangeOp {
     }
 }
 
-impl Ops {
-    pub fn verify(&self) -> Result<()> {
-        Ok(())
-    }
-}
 
 #[derive(Debug)]
 pub enum ReduceOpOption {
@@ -754,12 +816,17 @@ impl FunctionBuilder {
         values
     }
 
+    fn push_node(&mut self, op: AST) -> Result<()> {
+        self.scope.last_mut().ok_or(Error::msg("scope is empty"))?.push(op);
+        Ok(())
+    }
+
     pub fn program_id(&mut self) -> Result<Value> {
         let loc = std::panic::Location::caller().into();
-        let val = Value::new(Type::scalar(ElType::Val(Dtype::I32)));
-        let op = AST::Op(Ops::ProgramID(val.clone()), loc);
-        op.verify()?;
-        self.scope.last_mut().unwrap().push(op);
+        let openum = OpEnum::ProgramID(ProgramIDOp::build());
+        let val = openum.outputs().pop().unwrap().clone();
+        let op = AST::Op(openum, loc);
+        self.push_node(op)?;
         Ok(val)
     }
 
@@ -770,133 +837,40 @@ impl FunctionBuilder {
         value: Option<&Value>,
     ) -> Result<Value> {
         let loc = std::panic::Location::caller().into();
-        let val = Value::new(ptr.type_of().clone());
+        let openum = OpEnum::Load(LoadOp::build(ptr, mask, value)?);        
+        let val = openum.outputs().pop().unwrap().clone();
         let op = AST::Op(
-            Ops::Load(ptr.clone(), mask.cloned(), value.cloned(), val.clone()),
+            openum,
             loc,
         );
-        op.verify()?;
-        self.scope.last_mut().unwrap().push(op);
+        self.push_node(op)?;
         Ok(val)
     }
 
     pub fn store(&mut self, ptr: &Value, value: &Value, mask: Option<&Value>) -> Result<()> {
         let loc = std::panic::Location::caller().into();
-        let op = AST::Op(Ops::Store(ptr.clone(), value.clone(), mask.cloned()), loc);
-        op.verify()?;
-        self.scope.last_mut().unwrap().push(op);
+        let openum = OpEnum::Store(StoreOp::build(ptr, value, mask)?);
+        let op = AST::Op(openum, loc);
+        self.push_node(op)?;
         Ok(())
-    }
-
-    fn get_reshape_output_shape(ishape: &[usize], shape: &[i32]) -> Result<Vec<usize>> {
-        if shape.iter().filter(|x| **x < -1 || **x == 0).count() > 0 {
-            return Err(Error::msg(
-                "shape cannot contain any negative values (other than -1) or zeros",
-            ));
-        }
-        let neg_count = shape.iter().filter(|x| **x == -1).count();
-        if neg_count > 1 {
-            return Err(Error::msg("shape cannot contain more than one -1"));
-        }
-        let prod_wo_neg = shape
-            .iter()
-            .filter(|x| **x > 0)
-            .fold(1, |x, y| x * (*y) as usize);
-        let prod_in = ishape.iter().fold(1, |x, y| x * *y);
-        if (neg_count == 0 && prod_in != prod_wo_neg) || prod_in % prod_wo_neg != 0 {
-            return Err(Error::msg(format!(
-                "cannot reshape tensor of size {:?} into shape {:?}",
-                ishape, shape
-            )));
-        }
-        let oshape = shape
-            .iter()
-            .map(|x| {
-                if *x == -1 {
-                    prod_in / prod_wo_neg
-                } else {
-                    *x as usize
-                }
-            })
-            .collect::<Vec<_>>();
-        Ok(oshape)
     }
 
     pub fn reshape(&mut self, input: &Value, shape: &[i32]) -> Result<Value> {
         let loc = std::panic::Location::caller().into();
-
-        let oshape = FunctionBuilder::get_reshape_output_shape(input.type_of().shape(), shape)?;
-        let val = Value::new(Type::tensor(input.type_of().eltype.clone(), &oshape));
-        let op = AST::Op(Ops::Reshape(input.clone(), oshape, val.clone()), loc);
-        op.verify()?;
-        self.scope.last_mut().unwrap().push(op);
+        let openum = OpEnum::Reshape(ReshapeOp::build(input, shape)?);
+        let val = openum.outputs().pop().unwrap().clone();
+        let op = AST::Op(openum, loc);
+        self.push_node(op)?;
         Ok(val)
-    }
-
-    fn get_permute_output_shape(ishape: &[usize], permute: &[u32]) -> Result<Vec<usize>> {
-        let mut perm: Vec<_> = permute.into();
-        perm.sort();
-        for (i, p) in (0..ishape.len()).zip(perm) {
-            if i != p as usize {
-                return Err(Error::msg(format!(
-                    "Invalid permutation indicies, got {:?}",
-                    permute
-                )));
-            }
-        }
-        let out = permute.iter().map(|x| ishape[*x as usize]).collect();
-        Ok(out)
     }
 
     pub fn permute(&mut self, input: &Value, permutation: &[u32]) -> Result<Value> {
         let loc = std::panic::Location::caller().into();
-        let oshape =
-            FunctionBuilder::get_permute_output_shape(input.type_of().shape(), permutation)?;
-        let val = Value::new(Type::tensor(input.type_of().eltype.clone(), &oshape));
-        let op = AST::Op(
-            Ops::Permute(
-                input.clone(),
-                permutation.iter().map(|x| *x as usize).collect(),
-                val.clone(),
-            ),
-            loc,
-        );
-        op.verify()?;
-        self.scope.last_mut().unwrap().push(op);
+        let openum = OpEnum::Permute(PermuteOp::build(input, permutation)?);
+        let val = openum.outputs().pop().unwrap().clone();
+        let op = AST::Op(openum, loc);
+        self.push_node(op)?;
         Ok(val)
-    }
-
-    fn get_slice_output_shape(
-        ishape: &[usize],
-        slices: &[Range<i32>],
-    ) -> Result<(Vec<usize>, Vec<Range<usize>>)> {
-        if slices.len() > ishape.len() {
-            return Err(Error::msg(
-                "Number of slice dimensions must be equal or smaller 
-                than the number of actual dimensions"));
-        }
-        let mut oshape = vec![];
-        let mut oslice = vec![];
-        for (os, slice) in ishape.iter().zip(slices) {
-            if slice.end + (*os as i32) <= 0 || slice.start < 0 {
-                return Err(Error::msg("slice error"));
-            }
-            let upper = if slice.end < 0 {
-                ((*os) as i32 + slice.end) as usize
-            } else {
-                slice.end as usize
-            };
-            let lower = slice.start as usize;
-            if upper < lower {
-                return Err(Error::msg("slice error"));
-            }
-            let new_shape = upper - lower;
-            if new_shape > 0 {
-                oshape.push(new_shape)
-            }
-            oslice.push(lower..upper);
-        }
-        Ok((oshape, oslice))
     }
 
     /// Range: a..b
@@ -906,268 +880,64 @@ impl FunctionBuilder {
     /// Index and remove dim: a..a
     pub fn slice(&mut self, input: &Value, slices: &[Range<i32>]) -> Result<Value> {
         let loc = std::panic::Location::caller().into();
-        let (oshape, oslice) =
-            FunctionBuilder::get_slice_output_shape(input.type_of().shape(), slices)?;
-
-        let val = Value::new(Type::tensor(input.type_of().eltype.clone(), &oshape));
-        let op = AST::Op(Ops::Slice(input.clone(), oslice, val.clone()), loc);
-        op.verify()?;
-        self.scope.last_mut().unwrap().push(op);
+        let openum = OpEnum::Slice(SliceOp::build(input, slices)?);
+        let val = openum.outputs().pop().unwrap().clone();
+        let op = AST::Op(openum, loc);
+        self.push_node(op)?;
         Ok(val)
     }
 
     pub fn expand(&mut self, input: &Value, dims: i32) -> Result<Value> {
         let loc = std::panic::Location::caller().into();
-        let res_dim = if dims < 0 {
-            input.type_of().rank() as i32 + dims + 1
-        } else {
-            dims
-        };
-        if res_dim < 0 || res_dim > input.type_of().rank() as i32 {
-            return Err(Error::msg(format!(
-                "Invalid expand dimension, got {}",
-                dims
-            )));
-        }
-        let mut oshape = input.type_of().shape().to_vec();
-        oshape.insert(res_dim as usize, 1);
-        let val = Value::new(Type::tensor(input.type_of().eltype.clone(), &oshape));
-        let op = AST::Op(Ops::Expand(input.clone(), res_dim as usize, val.clone()), loc);
-        op.verify()?;
-        self.scope.last_mut().unwrap().push(op);
+        let openum = OpEnum::Expand(ExpandOp::build(input, dims)?);
+        let val = openum.outputs().pop().unwrap().clone();
+        let op = AST::Op(openum, loc);
+        self.push_node(op)?;
         Ok(val)
-    }
-
-    fn broad_cast_shape(a: &[usize], b: &[usize]) -> Result<Vec<usize>> {
-        if b.len() > a.len() {
-            return FunctionBuilder::broad_cast_shape(b, a);
-        }
-        let mut oshape = vec![];
-        for (x, y) in a.iter().zip(b.iter()) {
-            if *x == *y {
-                oshape.push(*x);
-            } else if *x == 1 {
-                oshape.push(*y);
-            } else if *y == 1 {
-                oshape.push(*x);
-            } else {
-                return Err(Error::msg(format!(
-                    "Cannot broadcast shapes {:?} and {:?}",
-                    a, b
-                )));
-            }
-        }
-        for x in a.iter().skip(b.len()) {
-            oshape.push(*x);
-        }
-        Ok(oshape)
     }
 
     pub fn broadcast(&mut self, input: &Value, other: &Value) -> Result<Value> {
         let loc = std::panic::Location::caller().into();
-        let shape = FunctionBuilder::broad_cast_shape(
-            input.type_of().shape(),
-            other.type_of().shape(),
-        )?;
-        let val = Value::new(Type::tensor(input.type_of().eltype.clone(), &shape));
-        let op = AST::Op(Ops::Broadcast(input.clone(), other.clone(), val.clone()), loc);
-        op.verify()?;
-        self.scope.last_mut().unwrap().push(op);
+        let openum = OpEnum::Broadcast(BroadcastOp::build(input, other)?);
+        let val = openum.outputs().pop().unwrap().clone();
+        let op = AST::Op(openum, loc);
+        self.push_node(op)?;
         Ok(val)
     }
 
     pub fn reduce(&mut self, input: &Value, dim: i32, op: ReduceOpOption) -> Result<Value> {
         let loc = std::panic::Location::caller().into();
-        let reduce_dim = if dim < 0 {
-            input.type_of().rank() as i32 + dim
-        } else {
-            dim
-        };
-        if reduce_dim < 0 || reduce_dim >= input.type_of().rank() as i32 {
-            return Err(Error::msg(format!(
-                "Invalid reduce dimension, got {} with input shape {:?}",
-                dim, input.type_of().shape()
-            )));
-        }
-        let val = Value::new(Type::tensor(
-            input.type_of().eltype.clone(),
-            input
-                .type_of()
-                .shape()
-                .iter()
-                .enumerate()
-                .filter(|(i, _)| *i != reduce_dim as usize)
-                .map(|(_, x)| *x)
-                .collect::<Vec<_>>()
-                .as_slice(),
-        ));
-        let op = AST::Op(Ops::Reduce(input.clone(), reduce_dim as usize, op, val.clone()), loc);
-        op.verify()?;
-        self.scope.last_mut().unwrap().push(op);
+        let openum = OpEnum::Reduce(ReduceOp::build(input, dim, op)?);
+        let val = openum.outputs().pop().unwrap().clone();
+        let op = AST::Op(openum, loc);
+        self.push_node(op)?;
         Ok(val)
     }
 
     pub fn dot(&mut self, a: &Value, b: &Value) -> Result<Value> {
         let loc = std::panic::Location::caller().into();
-        let ashape = a.type_of().shape();
-        let bshape = b.type_of().shape();
-        if ashape.len() != 2 || bshape.len() != 2 || ashape[1] != bshape[0] {
-            return Err(Error::msg(format!(
-                "Invalid dot input shapes {:?} and {:?}",
-                ashape, bshape
-            )));
-        }
-        let oshape = vec![ashape[0], bshape[1]];
-        let val = Value::new(Type::tensor(a.type_of().eltype.clone(), &oshape));
-        let op = AST::Op(Ops::Dot(a.clone(), b.clone(), val.clone()), loc);
-        op.verify()?;
-        self.scope.last_mut().unwrap().push(op);
+        let openum = OpEnum::Dot(DotOp::build(a, b)?);
+        let val = openum.outputs().pop().unwrap().clone();
+        let op = AST::Op(openum, loc);
+        self.push_node(op)?;
         Ok(val)
-    }
-
-    pub fn extern_elementwise(&mut self, name: impl Into<String>, args: &[Value]) -> Result<Value> {
-        let loc = std::panic::Location::caller().into();
-        self.elementwise_builder(loc, name, args)
-    }
-
-    fn elementwise_builder(
-        &mut self,
-        loc: Location,
-        name: impl Into<String>,
-        args: &[Value],
-    ) -> Result<Value> {
-        let repr_arg = args.first().ok_or(Error::msg("args cannot be empty"))?;
-        let mut oshape = repr_arg.type_of().shape().to_vec();
-        for s in args.iter().skip(1).map(|x| x.type_of().shape()) {
-            oshape = FunctionBuilder::broad_cast_shape(&oshape, s)?;
-        }
-
-        let val = Value::new(Type::tensor(
-            repr_arg.type_of().eltype.clone(),
-            &oshape,
-        ));
-        let op = AST::Op(
-            Ops::ElementWise(ElementWiseFn {
-                name: name.into(),
-                args: args.into(),
-                output: val.clone(),
-            }),
-            loc,
-        );
-        op.verify()?;
-        self.scope.last_mut().unwrap().push(op);
-        Ok(val)
-    }
-
-    // arith
-    pub fn add(&mut self, a: &Value, b: &Value) -> Result<Value> {
-        let loc = std::panic::Location::caller().into();
-        self.elementwise_builder(loc, "add", &[a.clone(), b.clone()])
-    }
-
-    pub fn sub(&mut self, a: &Value, b: &Value) -> Result<Value> {
-        let loc = std::panic::Location::caller().into();
-        self.elementwise_builder(loc, "sub", &[a.clone(), b.clone()])
-    }
-
-    pub fn mul(&mut self, a: &Value, b: &Value) -> Result<Value> {
-        let loc = std::panic::Location::caller().into();
-        self.elementwise_builder(loc, "mul", &[a.clone(), b.clone()])
-    }
-
-    pub fn div(&mut self, a: &Value, b: &Value) -> Result<Value> {
-        let loc = std::panic::Location::caller().into();
-        self.elementwise_builder(loc, "div", &[a.clone(), b.clone()])
-    }
-
-    pub fn neg(&mut self, a: &Value) -> Result<Value> {
-        let loc = std::panic::Location::caller().into();
-        self.elementwise_builder(loc, "neg", &[a.clone()])
-    }
-
-    // integer
-    pub fn rem(&mut self, a: &Value, b: &Value) -> Result<Value> {
-        let loc = std::panic::Location::caller().into();
-        self.elementwise_builder(loc, "rem", &[a.clone(), b.clone()])
-    }
-
-    // floating
-    pub fn pow(&mut self, a: &Value, b: &Value) -> Result<Value> {
-        let loc = std::panic::Location::caller().into();
-        self.elementwise_builder(loc, "pow", &[a.clone(), b.clone()])
-    }
-
-    pub fn exp(&mut self, a: &Value) -> Result<Value> {
-        let loc = std::panic::Location::caller().into();
-        self.elementwise_builder(loc, "exp", &[a.clone()])
-    }
-
-    // logical
-    pub fn eq(&mut self, a: &Value, b: &Value) -> Result<Value> {
-        let loc = std::panic::Location::caller().into();
-        self.elementwise_builder(loc, "eq", &[a.clone(), b.clone()])
-    }
-
-    pub fn leq(&mut self, a: &Value, b: &Value) -> Result<Value> {
-        let loc = std::panic::Location::caller().into();
-        self.elementwise_builder(loc, "leq", &[a.clone(), b.clone()])
-    }
-
-    pub fn lt(&mut self, a: &Value, b: &Value) -> Result<Value> {
-        let loc = std::panic::Location::caller().into();
-        self.elementwise_builder(loc, "lt", &[a.clone(), b.clone()])
-    }
-
-    pub fn shr(&mut self, a: &Value, b: &Value) -> Result<Value> {
-        let loc = std::panic::Location::caller().into();
-        self.elementwise_builder(loc, "shr", &[a.clone(), b.clone()])
-    }
-
-    pub fn shl(&mut self, a: &Value, b: &Value) -> Result<Value> {
-        let loc = std::panic::Location::caller().into();
-        self.elementwise_builder(loc, "shl", &[a.clone(), b.clone()])
-    }
-
-    pub fn and(&mut self, a: &Value, b: &Value) -> Result<Value> {
-        let loc = std::panic::Location::caller().into();
-        self.elementwise_builder(loc, "and", &[a.clone(), b.clone()])
-    }
-
-    pub fn or(&mut self, a: &Value, b: &Value) -> Result<Value> {
-        let loc = std::panic::Location::caller().into();
-        self.elementwise_builder(loc, "or", &[a.clone(), b.clone()])
-    }
-
-    pub fn xor(&mut self, a: &Value, b: &Value) -> Result<Value> {
-        let loc = std::panic::Location::caller().into();
-        self.elementwise_builder(loc, "xor", &[a.clone(), b.clone()])
-    }
-
-    pub fn not(&mut self, a: &Value) -> Result<Value> {
-        let loc = std::panic::Location::caller().into();
-        self.elementwise_builder(loc, "not", &[a.clone()])
     }
 
     pub fn arange(&mut self, begin: i32, end: i32) -> Result<Value> {
         let loc = std::panic::Location::caller().into();
-        let val = Value::new(Type::tensor(
-            ElType::Val(Dtype::I32),
-            &[end as usize - begin as usize],
-        ));
-        let op = AST::Op(Ops::Arange(begin, end, val.clone()), loc);
-        op.verify()?;
-        self.scope.last_mut().unwrap().push(op);
+        let openum = OpEnum::Arange(ArangeOp::build(begin, end)?);
+        let val = openum.outputs().pop().unwrap().clone();
+        let op = AST::Op(openum, loc);
+        self.push_node(op)?;
         Ok(val)
     }
 
     pub fn full(&mut self, value: impl Into<Constant>, shape: &[usize]) -> Result<Value> {
         let loc = std::panic::Location::caller().into();
-        let c: Constant = value.into();
-        let ctype = Type::tensor(ElType::Val(c.dtype()), shape);
-        let val = Value::new(ctype);
-        let op = AST::Op(Ops::Full(c, val.clone()), loc);
-        op.verify()?;
-        self.scope.last_mut().unwrap().push(op);
+        let openum = OpEnum::Full(FullOp::build(value, shape));
+        let val = openum.outputs().pop().unwrap().clone();
+        let op = AST::Op(openum, loc);
+        self.push_node(op)?;
         Ok(val)
     }
 
@@ -1193,7 +963,6 @@ impl FunctionBuilder {
             ),
             loc,
         );
-        op.verify()?;
         self.scope.last_mut().unwrap().push(op);
         Ok(())
     }
@@ -1204,7 +973,6 @@ impl FunctionBuilder {
         scope(self)?;
         let while_scope = self.scope.pop().unwrap();
         let op = AST::Stmt(Stmt::While(cond.clone(), while_scope), loc);
-        op.verify()?;
         self.scope.last_mut().unwrap().push(op);
         Ok(())
     }
@@ -1212,7 +980,6 @@ impl FunctionBuilder {
     pub fn return_(&mut self, values: &[Value]) -> Result<()> {
         let loc = std::panic::Location::caller().into();
         let op = AST::Stmt(Stmt::Return(values.into()), loc);
-        op.verify()?;
         self.scope.last_mut().unwrap().push(op);
         Ok(())
     }
@@ -1231,7 +998,6 @@ impl FunctionBuilder {
         else_(self)?;
         let else_scope = self.scope.pop().unwrap();
         let op = AST::Stmt(Stmt::If(cond.clone(), then_scope, else_scope), loc);
-        op.verify()?;
         self.scope.last_mut().unwrap().push(op);
         Ok(())
     }
@@ -1239,7 +1005,6 @@ impl FunctionBuilder {
     pub fn break_(&mut self) -> Result<()> {
         let loc = std::panic::Location::caller().into();
         let op = AST::Stmt(Stmt::Break, loc);
-        op.verify()?;
         self.scope.last_mut().unwrap().push(op);
         Ok(())
     }
@@ -1247,113 +1012,112 @@ impl FunctionBuilder {
     pub fn assign(&mut self, lhs: &Value, rhs: &Value) -> Result<()> {
         let loc = std::panic::Location::caller().into();
         let op = AST::Stmt(Stmt::Assign(lhs.clone(), rhs.clone()), loc);
-        op.verify()?;
         self.scope.last_mut().unwrap().push(op);
         Ok(())
     }
 
-    pub fn visit_terminals(ast: &AST, f: &mut impl FnMut(&AST)) { 
-        // if not &mut then f will raise a recursion error in memorization
-        // as inner recursive functions needs to be &mut f
-        match ast {
-            AST::Op(_, _) => f(ast),
-            AST::Stmt(stmt, _) => match stmt {
-                Stmt::For(_, _, _, _, body) => {
-                    for ast in body {
-                        FunctionBuilder::visit_terminals(ast, f);
-                    }
-                }
-                Stmt::While(_, body) => {
-                    for ast in body {
-                        FunctionBuilder::visit_terminals(ast, f);
-                    }
-                }
-                Stmt::If(_, then, else_) => {
-                    for ast in then {
-                        FunctionBuilder::visit_terminals(ast, f);
-                    }
-                    for ast in else_ {
-                        FunctionBuilder::visit_terminals(ast, f);
-                    }
-                }
-                Stmt::Assign(_, _) => f(ast),
-                Stmt::Return(_) => f(ast),
-                Stmt::Break => f(ast),
-                Stmt::Continue => f(ast),
-                Stmt::Function(func) => {
-                    for ast in &func.body {
-                        FunctionBuilder::visit_terminals(ast, f);
-                    }
-                },
-            },
-        }
-    }
+    // pub fn visit_terminals(ast: &AST, f: &mut impl FnMut(&AST)) { 
+    //     // if not &mut then f will raise a recursion error in memorization
+    //     // as inner recursive functions needs to be &mut f
+    //     match ast {
+    //         AST::Op(_, _) => f(ast),
+    //         AST::Stmt(stmt, _) => match stmt {
+    //             Stmt::For(_, _, _, _, body) => {
+    //                 for ast in body {
+    //                     FunctionBuilder::visit_terminals(ast, f);
+    //                 }
+    //             }
+    //             Stmt::While(_, body) => {
+    //                 for ast in body {
+    //                     FunctionBuilder::visit_terminals(ast, f);
+    //                 }
+    //             }
+    //             Stmt::If(_, then, else_) => {
+    //                 for ast in then {
+    //                     FunctionBuilder::visit_terminals(ast, f);
+    //                 }
+    //                 for ast in else_ {
+    //                     FunctionBuilder::visit_terminals(ast, f);
+    //                 }
+    //             }
+    //             Stmt::Assign(_, _) => f(ast),
+    //             Stmt::Return(_) => f(ast),
+    //             Stmt::Break => f(ast),
+    //             Stmt::Continue => f(ast),
+    //             Stmt::Function(func) => {
+    //                 for ast in &func.body {
+    //                     FunctionBuilder::visit_terminals(ast, f);
+    //                 }
+    //             },
+    //         },
+    //     }
+    // }
 
-    fn verify_function_return(body: &Vec<AST>) -> Result<Vec<Type>> {
-        let mut returns = Ok(vec![]);
-        let mut seen = false;
-        for node in body {
-            Self::visit_terminals(node, &mut |node| {
-                if let AST::Stmt(Stmt::Return(values), _) = node {
-                    if !seen && returns.is_ok() {
-                        let types = values.iter().map(|x| x.type_of().clone()).collect();
-                        returns = Ok(types);
-                        seen = true;
-                    } else if seen && returns.is_ok() {
-                        let types: Vec<_> = values.iter().map(|x| x.type_of().clone()).collect();
-                        if returns.as_ref().unwrap() != &types {
-                            returns = Err(Error::msg(format!(
-                                "Return types mismatch, got {:?} and {:?}",
-                                returns.as_ref().unwrap(),
-                                types
-                            )));
-                        }
-                    }
-                }
-            });
-        }
-        returns
-    }
+    // fn verify_function_return(body: &Vec<AST>) -> Result<Vec<Type>> {
+    //     let mut returns = Ok(vec![]);
+    //     let mut seen = false;
+    //     for node in body {
+    //         Self::visit_terminals(node, &mut |node| {
+    //             if let AST::Stmt(Stmt::Return(values), _) = node {
+    //                 if !seen && returns.is_ok() {
+    //                     let types = values.iter().map(|x| x.type_of().clone()).collect();
+    //                     returns = Ok(types);
+    //                     seen = true;
+    //                 } else if seen && returns.is_ok() {
+    //                     let types: Vec<_> = values.iter().map(|x| x.type_of().clone()).collect();
+    //                     if returns.as_ref().unwrap() != &types {
+    //                         returns = Err(Error::msg(format!(
+    //                             "Return types mismatch, got {:?} and {:?}",
+    //                             returns.as_ref().unwrap(),
+    //                             types
+    //                         )));
+    //                     }
+    //                 }
+    //             }
+    //         });
+    //     }
+    //     returns
+    // }
 
-    pub fn build(mut self) -> Result<Function> {
-        if self.scope.len() != 1 {
-            return Err(Error::msg("Internal error, scope should only have one element"));
-        }
+    // pub fn build(mut self) -> Result<Function> {
+    //     if self.scope.len() != 1 {
+    //         return Err(Error::msg("Internal error, scope should only have one element"));
+    //     }
         
-        Ok(Function {
-            name: self.name,
-            args: self.args,
-            returns: Self::verify_function_return(self.scope.last().unwrap())?,
-            body: self.scope.pop().unwrap(),
-        })
-    }
+    //     Ok(Function {
+    //         name: self.name,
+    //         args: self.args,
+    //         returns: Self::verify_function_return(self.scope.last().unwrap())?,
+    //         body: self.scope.pop().unwrap(),
+    //     })
+    // }
 }
 
 
 
-#[test]
-fn test_softmax() -> Result<()> {
-    let mut builder = FunctionBuilder::new("softmax_kernel");
-    let [x_ptr, y_ptr, row_shape] =
-        builder.arg([Type::f32_ptr(), Type::f32_ptr(), Type::i32_scalar()]);
+// #[test]
+// fn test_softmax() -> Result<()> {
+//     let mut builder = FunctionBuilder::new("softmax_kernel");
+//     let [x_ptr, y_ptr, row_shape] =
+//         builder.arg([Type::f32_ptr(), Type::f32_ptr(), Type::i32_scalar()]);
 
-    let tid = builder.program_id()?;
-    let idx = builder.arange(0, 512)?;
-    let mask = builder.lt(&idx, &row_shape)?;
-    let offset = builder.mul(&tid, &row_shape)?;
-    let idx = builder.add(&idx, &offset)?;
+//     let tid = builder.program_id()?;
+//     let idx = builder.arange(0, 512)?;
+//     let mask = builder.lt(&idx, &row_shape)?;
+//     let offset = builder.mul(&tid, &row_shape)?;
+//     let idx = builder.add(&idx, &offset)?;
 
-    let load_ptr = builder.add(&x_ptr, &idx)?;
+//     let load_ptr = builder.add(&x_ptr, &idx)?;
 
-    let x = builder.load(&load_ptr, Some(&mask), None)?;
-    let x = builder.exp(&x)?;
-    let sum = builder.reduce(&x, 0, ReduceOpOption::Sum)?;
-    let x = builder.div(&x, &sum)?;
+//     let x = builder.load(&load_ptr, Some(&mask), None)?;
+//     let x = builder.exp(&x)?;
+//     let sum = builder.reduce(&x, 0, ReduceOpOption::Sum)?;
+//     let x = builder.div(&x, &sum)?;
 
-    let write_ptr = builder.add(&y_ptr, &idx)?;
-    builder.store(&write_ptr, &x, Some(&mask))?;
+//     let write_ptr = builder.add(&y_ptr, &idx)?;
+//     builder.store(&write_ptr, &x, Some(&mask))?;
 
-    let softmax_kernel = builder.build()?;
-    println!("{:#?}", softmax_kernel);
-    Ok(())
-}
+//     let softmax_kernel = builder.build()?;
+//     println!("{:#?}", softmax_kernel);
+//     Ok(())
+// }
