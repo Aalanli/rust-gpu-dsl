@@ -199,6 +199,57 @@ pub enum AST {
     Stmt(Stmt, Location),
 }
 
+impl AST {
+    pub fn is_stmt(&self) -> bool {
+        match self {
+            Self::Stmt(_, _) => true,
+            _ => false,
+        }
+    }
+
+    pub fn is_op(&self) -> bool {
+        match self {
+            Self::Op(_, _) => true,
+            _ => false,
+        }
+    }
+
+    pub fn get_op(self) -> Result<OpEnum> {
+        match self {
+            Self::Op(op, _) => Ok(op),
+            _ => Err(Error::msg("AST is not an Op")),
+        }
+    }
+
+    pub fn get_stmt(self) -> Result<Stmt> {
+        match self {
+            Self::Stmt(stmt, _) => Ok(stmt),
+            _ => Err(Error::msg("AST is not a Stmt")),
+        }
+    }
+
+    pub fn get_stmt_ref(&self) -> Option<&Stmt> {
+        match self {
+            Self::Stmt(stmt, _) => Some(stmt),
+            _ => None,
+        }
+    }
+
+    pub fn get_stmt_mut(&mut self) -> Option<&mut Stmt> {
+        match self {
+            Self::Stmt(stmt, _) => Some(stmt),
+            _ => None,
+        }
+    }
+
+    pub fn loc(&self) -> &Location {
+        match self {
+            Self::Op(_, loc) => loc,
+            Self::Stmt(_, loc) => loc,
+        }
+    }
+}
+
 #[derive(Debug)]
 pub enum Stmt {
     Function(Function),
@@ -212,9 +263,7 @@ pub enum Stmt {
 }
 
 impl Stmt {
-    pub fn verify(&self) -> Result<()> {
-        Ok(())
-    }
+    
 }
 
 #[derive(Debug)]
@@ -269,6 +318,41 @@ impl OpEnum {
             Self::Reduce(op) => vec![&op.input],
             Self::ElementWise(op) => op.args.iter().collect(),
             Self::Dot(op) => vec![&op.a, &op.b],
+            Self::Full(op) => vec![],
+            Self::Arange(op) => vec![],
+        }
+    }
+
+    pub fn inputs_mut(&mut self) -> Vec<&mut Value> {
+        match self {
+            Self::ProgramID(op) => vec![],
+            Self::Load(op) => { 
+                let mut output = vec![&mut op.ptr];
+                if let Some(mask) = &mut op.mask {
+                    output.push(mask);
+                }
+                if let Some(value) = &mut op.value {
+                    output.push(value);
+                }
+                output
+            },
+
+            Self::Store(op) => {
+                let mut output = vec![&mut op.ptr, &mut op.value];
+                if let Some(mask) = &mut op.mask {
+                    output.push(mask);
+                }
+                output
+            },
+
+            Self::Reshape(op) => vec![&mut op.input],
+            Self::Permute(op) => vec![&mut op.input],
+            Self::Slice(op) => vec![&mut op.input],
+            Self::Expand(op) => vec![&mut op.input],
+            Self::Broadcast(op) => vec![&mut op.input, &mut op.other],
+            Self::Reduce(op) => vec![&mut op.input],
+            Self::ElementWise(op) => op.args.iter_mut().collect(),
+            Self::Dot(op) => vec![&mut op.a, &mut op.b],
             Self::Full(op) => vec![],
             Self::Arange(op) => vec![],
         }
@@ -779,6 +863,12 @@ impl Value {
     }
 }
 
+impl PartialEq for Value {
+    fn eq(&self, other: &Self) -> bool {
+        Rc::ptr_eq(&self.0, &other.0)
+    }
+}
+
 #[derive(Debug)]
 struct ValueImpl {
     type_of: Type,
@@ -967,7 +1057,7 @@ impl FunctionBuilder {
         Ok(())
     }
 
-    pub fn while_(&mut self, cond: &Value, scope: impl Fn(&mut Self) -> Result<()>) -> Result<()> {
+    pub fn while_(&mut self, cond: &Value, scope: impl FnOnce(&mut Self) -> Result<()>) -> Result<()> {
         let loc = std::panic::Location::caller().into();
         self.scope.push(vec![]);
         scope(self)?;
@@ -1016,83 +1106,438 @@ impl FunctionBuilder {
         Ok(())
     }
 
-    // pub fn visit_terminals(ast: &AST, f: &mut impl FnMut(&AST)) { 
-    //     // if not &mut then f will raise a recursion error in memorization
-    //     // as inner recursive functions needs to be &mut f
-    //     match ast {
-    //         AST::Op(_, _) => f(ast),
-    //         AST::Stmt(stmt, _) => match stmt {
-    //             Stmt::For(_, _, _, _, body) => {
-    //                 for ast in body {
-    //                     FunctionBuilder::visit_terminals(ast, f);
-    //                 }
-    //             }
-    //             Stmt::While(_, body) => {
-    //                 for ast in body {
-    //                     FunctionBuilder::visit_terminals(ast, f);
-    //                 }
-    //             }
-    //             Stmt::If(_, then, else_) => {
-    //                 for ast in then {
-    //                     FunctionBuilder::visit_terminals(ast, f);
-    //                 }
-    //                 for ast in else_ {
-    //                     FunctionBuilder::visit_terminals(ast, f);
-    //                 }
-    //             }
-    //             Stmt::Assign(_, _) => f(ast),
-    //             Stmt::Return(_) => f(ast),
-    //             Stmt::Break => f(ast),
-    //             Stmt::Continue => f(ast),
-    //             Stmt::Function(func) => {
-    //                 for ast in &func.body {
-    //                     FunctionBuilder::visit_terminals(ast, f);
-    //                 }
-    //             },
-    //         },
-    //     }
-    // }
+    pub fn elementwise(&mut self, args: &[Value], op_code: &str) -> Result<Value> {
+        let loc = std::panic::Location::caller().into();
+        let openum = OpEnum::ElementWise(ElementWiseOp::build(op_code, args)?);
+        let val = openum.outputs().pop().unwrap().clone();
+        let op = AST::Op(openum, loc);
+        self.push_node(op)?;
+        Ok(val)
+    }
 
-    // fn verify_function_return(body: &Vec<AST>) -> Result<Vec<Type>> {
-    //     let mut returns = Ok(vec![]);
-    //     let mut seen = false;
-    //     for node in body {
-    //         Self::visit_terminals(node, &mut |node| {
-    //             if let AST::Stmt(Stmt::Return(values), _) = node {
-    //                 if !seen && returns.is_ok() {
-    //                     let types = values.iter().map(|x| x.type_of().clone()).collect();
-    //                     returns = Ok(types);
-    //                     seen = true;
-    //                 } else if seen && returns.is_ok() {
-    //                     let types: Vec<_> = values.iter().map(|x| x.type_of().clone()).collect();
-    //                     if returns.as_ref().unwrap() != &types {
-    //                         returns = Err(Error::msg(format!(
-    //                             "Return types mismatch, got {:?} and {:?}",
-    //                             returns.as_ref().unwrap(),
-    //                             types
-    //                         )));
-    //                     }
-    //                 }
-    //             }
-    //         });
-    //     }
-    //     returns
-    // }
+    pub fn visit_terminals(ast: &AST, f: &mut impl FnMut(&AST)) { 
+        // if not &mut then f will raise a recursion error in memorization
+        // as inner recursive functions needs to be &mut f
+        match ast {
+            AST::Op(_, _) => f(ast),
+            AST::Stmt(stmt, _) => match stmt {
+                Stmt::For(_, _, _, _, body) => {
+                    for ast in body {
+                        FunctionBuilder::visit_terminals(ast, f);
+                    }
+                }
+                Stmt::While(_, body) => {
+                    for ast in body {
+                        FunctionBuilder::visit_terminals(ast, f);
+                    }
+                }
+                Stmt::If(_, then, else_) => {
+                    for ast in then {
+                        FunctionBuilder::visit_terminals(ast, f);
+                    }
+                    for ast in else_ {
+                        FunctionBuilder::visit_terminals(ast, f);
+                    }
+                }
+                Stmt::Assign(_, _) => f(ast),
+                Stmt::Return(_) => f(ast),
+                Stmt::Break => f(ast),
+                Stmt::Continue => f(ast),
+                Stmt::Function(func) => {
+                    for ast in &func.body {
+                        FunctionBuilder::visit_terminals(ast, f);
+                    }
+                },
+            },
+        }
+    }
 
-    // pub fn build(mut self) -> Result<Function> {
-    //     if self.scope.len() != 1 {
-    //         return Err(Error::msg("Internal error, scope should only have one element"));
-    //     }
+    fn verify_function_return(body: &Vec<AST>) -> Result<Vec<Type>> {
+        let mut returns = Ok(vec![]);
+        let mut seen = false;
+        for node in body {
+            Self::visit_terminals(node, &mut |node| {
+                if let AST::Stmt(Stmt::Return(values), _) = node {
+                    if !seen && returns.is_ok() {
+                        let types = values.iter().map(|x| x.type_of().clone()).collect();
+                        returns = Ok(types);
+                        seen = true;
+                    } else if seen && returns.is_ok() {
+                        let types: Vec<_> = values.iter().map(|x| x.type_of().clone()).collect();
+                        if returns.as_ref().unwrap() != &types {
+                            returns = Err(Error::msg(format!(
+                                "Return types mismatch, got {:?} and {:?}",
+                                returns.as_ref().unwrap(),
+                                types
+                            )));
+                        }
+                    }
+                }
+            });
+        }
+        returns
+    }
+
+    pub fn build(mut self) -> Result<Function> {
+        if self.scope.len() != 1 {
+            return Err(Error::msg("Internal error, scope should only have one element"));
+        }
         
-    //     Ok(Function {
-    //         name: self.name,
-    //         args: self.args,
-    //         returns: Self::verify_function_return(self.scope.last().unwrap())?,
-    //         body: self.scope.pop().unwrap(),
-    //     })
-    // }
+        Ok(Function {
+            name: self.name,
+            args: self.args,
+            returns: Self::verify_function_return(self.scope.last().unwrap())?,
+            body: self.scope.pop().unwrap(),
+        })
+    }
+
+    pub fn build_body(mut self) -> Result<Vec<AST>> {
+        if self.scope.len() != 1 {
+            return Err(Error::msg("Internal error, scope should only have one element"));
+        }
+        Ok(self.scope.pop().unwrap())
+    }
+
+    pub fn insert_block(&mut self, body: Vec<AST>) {
+        self.scope.last_mut().unwrap().extend(body);
+    }
+
+    pub fn insert_node(&mut self, node: AST) {
+        self.scope.last_mut().unwrap().push(node);
+    }
 }
 
+fn replace_all_uses_with(nodes: &mut [AST], from: &Value, to: &Value) {
+    for node in nodes {
+        match node {
+            AST::Op(op, _) => {
+                for input in op.inputs_mut() {
+                    if input == from {
+                        *input = to.clone();
+                    }
+                }
+            }
+            AST::Stmt(stmt, _) => {
+                match stmt {
+                    Stmt::For(a, b, c, d, body) => {
+                        for node in [a, b, c, d] {
+                            if node == from {
+                                *node = to.clone();
+                            }
+                        }
+                        replace_all_uses_with(body, from, to);
+                    }
+                    Stmt::While(cond, body) => {
+                        if cond == from {
+                            *cond = to.clone();
+                        }
+                        replace_all_uses_with(body, from, to);
+                    }
+                    Stmt::If(cond, then, else_) => {
+                        if cond == from {
+                            *cond = to.clone();
+                        }
+                        replace_all_uses_with(then, from, to);
+                        replace_all_uses_with(else_, from, to);
+                    }
+                    Stmt::Assign(lhs, rhs) => {
+                        if lhs == from {
+                            *lhs = to.clone();
+                        }
+                        if rhs == from {
+                            *rhs = to.clone();
+                        }
+                    }
+                    Stmt::Return(values) => {
+                        for value in values {
+                            if value == from {
+                                *value = to.clone();
+                            }
+                        }
+                    }
+                    Stmt::Break => {}
+                    Stmt::Continue => {}
+                    Stmt::Function(func) => {
+                        replace_all_uses_with(&mut func.body, from, to);
+                    }
+                }
+            }
+        }
+    }
+}
+
+enum Cond {
+    AND(Vec<Cond>),
+    OR(Vec<Cond>),
+    NOT(Box<Cond>),
+    Val(Value),
+}
+
+fn has_pred_break(stmt: &Stmt) -> bool {
+    match stmt {
+        Stmt::If(_, then, else_) => {
+            then.iter().filter_map(|x| x.get_stmt_ref()).map(|x| has_pred_break(x)).any(|x| x)
+            || else_.iter().filter_map(|x| x.get_stmt_ref()).map(|x| has_pred_break(x)).any(|x| x)
+        }
+        _ => false
+    }
+}
+
+fn remove_unecessary_loop(stmts: &mut Vec<AST>) {
+    let mut i = 0;
+    while i < stmts.len() {
+        let mut body_stmts = vec![];
+        if let Some(stmt) = stmts[i].get_stmt_mut() {
+            match stmt {
+                Stmt::For(ind_var, start, _, _, body) => {
+                    for j in 0..body.len() {
+                        if let AST::Stmt(Stmt::Break, _) = body[j] {
+                            body.truncate(j);
+                            replace_all_uses_with(body, ind_var, start);
+                            remove_unecessary_loop(body);
+                            std::mem::swap(&mut body_stmts, body);
+                            break;
+                        }
+                    }
+                },
+                Stmt::While(_, body) => {
+                    for j in 0..body.len() {
+                        if let AST::Stmt(Stmt::Break, _) = body[j] {
+                            body.truncate(j);
+                            remove_unecessary_loop(body);
+                            std::mem::swap(&mut body_stmts, body);
+                            break;
+                        }
+                    }
+                }
+                _ => {}
+            }
+        }
+        if body_stmts.len() > 0 {
+            let old_len = body_stmts.len();
+            stmts.splice(i..i+1, body_stmts);
+            i += old_len - 1;
+        }
+        i += 1;
+    }
+}
+
+// fn protect_block_break(nodes: &mut Vec<AST>, break_cond_var: &Value) -> bool {
+//     let mut i = 0;
+//     let mut has_break = false;
+//     while i < nodes.len() {
+//         if let Some(stmt) = nodes[i].get_stmt_mut() {
+//             if let Stmt::If(_, _, _) = stmt {
+//                 has_break = remove_pred_break(stmt, break_cond_var);
+//             }
+//         }
+//         if has_break {
+//             let mut rest: Vec<_> = nodes.drain(i+1..).collect();
+//             protect_block_break(&mut rest, break_cond_var);
+//             let if_stmt = Stmt::If(break_cond_var.clone(), rest, vec![]);
+//             nodes.push(AST::Stmt(if_stmt, nodes[i].loc().clone()));
+//             break;
+//         }
+//         i += 1;
+//     }
+//     has_break
+// }
+
+fn remove_predicated_break_continue(
+    stmt: &mut Stmt,
+    break_cond_var: &Value, 
+    continue_cond_var: &Value
+) -> (bool, bool) { // (has_break, has_continue)
+
+    let mut has_break = false;
+    let mut has_continue = false;
+    match stmt {
+        Stmt::If(cond, then, else_) => {
+            let mut i = 0;
+            while i < then.len() {
+                if let Some(Stmt::Break) = then[i].get_stmt_ref() {
+                    then[i] = AST::Stmt(Stmt::Assign(break_cond_var.clone(), cond.clone()), then[i].loc().clone());
+                    has_break = true;
+                    break;
+                } else if let Some(Stmt::Continue) = then[i].get_stmt_ref() {
+                    then[i] = AST::Stmt(Stmt::Assign(continue_cond_var.clone(), cond.clone()), then[i].loc().clone());
+                    has_continue = true;
+                    break;
+                }
+                i += 1;
+            }
+            then.truncate(i + 1);
+            let (has_break_, has_continue_) = hoist_break_continue(then, Some(break_cond_var), Some(continue_cond_var));
+            has_break |= has_break_;
+            has_continue |= has_continue_;
+
+            i = 0;
+            while i < else_.len() {
+                if let Some(Stmt::Break) = else_[i].get_stmt_ref() {
+                    let not_op = OpEnum::ElementWise(ElementWiseOp::build("not",&[cond.clone()]).unwrap());                    
+                    let not_val = not_op.outputs().pop().unwrap().clone();
+                    else_.insert(i, AST::Op(not_op, else_[i].loc().clone()));
+                    i += 1;
+                    else_[i] = AST::Stmt(Stmt::Assign(break_cond_var.clone(), not_val), else_[i].loc().clone());
+                    has_break = true;
+                    break;
+                } else if let Some(Stmt::Continue) = else_[i].get_stmt_ref() {
+                    let not_op = OpEnum::ElementWise(ElementWiseOp::build("not",&[cond.clone()]).unwrap());                    
+                    let not_val = not_op.outputs().pop().unwrap().clone();
+                    else_.insert(i, AST::Op(not_op, else_[i].loc().clone()));
+                    i += 1;
+                    else_[i] = AST::Stmt(Stmt::Assign(continue_cond_var.clone(), not_val), else_[i].loc().clone());
+                    has_continue = true;
+                    break;
+                }
+                i += 1;
+            }
+
+            else_.truncate(i + 1);
+            let (has_break_, has_continue_) = hoist_break_continue(then, Some(break_cond_var), Some(continue_cond_var));
+            has_break |= has_break_;
+            has_continue |= has_continue_;
+        }
+        _ => {}
+    }
+    (has_break, has_continue)
+}
+
+fn protect_block_break_continue(
+    nodes: &mut Vec<AST>,
+    break_cond_var: &Value,
+    continue_cond_var: &Value,
+) -> (bool, bool) { // (has_break, has_continue)
+    let mut has_break = false;
+    let mut has_continue = false;
+    let mut i = 0;
+    while i < nodes.len() {
+        let loc = nodes[i].loc().clone();
+        if let Some(stmt) = nodes[i].get_stmt_mut() {
+            if let Stmt::If(_, _, _) = stmt {
+                let (has_break_, has_continue_) = remove_predicated_break_continue(stmt, break_cond_var, continue_cond_var);
+                has_break |= has_break_;
+                has_continue |= has_continue_;
+            } else if let Stmt::Break = stmt {
+                let const_true = OpEnum::Full(FullOp::build(true, &[]));
+                let const_true_val = const_true.outputs()[0].clone();
+                nodes.insert(i, AST::Op(const_true, loc.clone()));
+                nodes[i + 1] = AST::Stmt(Stmt::Assign(break_cond_var.clone(), const_true_val), loc.clone()); 
+                i += 1;
+                has_break = true;
+            } else if let Stmt::Continue = stmt {
+                let const_true = OpEnum::Full(FullOp::build(true, &[]));
+                let const_true_val = const_true.outputs()[0].clone();
+                nodes.insert(i, AST::Op(const_true, loc.clone()));
+                nodes[i + 1] = AST::Stmt(Stmt::Assign(continue_cond_var.clone(), const_true_val), loc.clone()); 
+                i += 1;
+                has_continue = true;
+            }
+        }
+
+        if has_break || has_continue {
+            let not_execute_rest = OpEnum::ElementWise(ElementWiseOp::build("or", &[break_cond_var.clone(), continue_cond_var.clone()]).unwrap());
+            let not_execute_continue_val = not_execute_rest.outputs()[0].clone();
+            let execute_rest = OpEnum::ElementWise(ElementWiseOp::build("not", &[not_execute_continue_val.clone()]).unwrap());
+            let execute_rest_val = execute_rest.outputs()[0].clone();
+            nodes.splice(i+1..i+1, [AST::Op(not_execute_rest, loc.clone()), AST::Op(execute_rest, loc.clone())]);
+            i += 2;
+
+            let mut rest: Vec<_> = nodes.drain(i+1..).collect();
+            let (has_break_, has_continue_) = hoist_break_continue(&mut rest, Some(break_cond_var), Some(continue_cond_var));
+            has_break |= has_break_;
+            has_continue |= has_continue_;
+            let if_stmt = Stmt::If(execute_rest_val, rest, vec![]);
+            nodes.push(AST::Stmt(if_stmt, nodes[i].loc().clone()));
+            break;
+        }
+        i += 1;
+    }
+    (has_break, has_continue)
+
+}
+
+fn hoist_break_continue(
+    nodes: &mut Vec<AST>, 
+    break_var: Option<&Value>,
+    continue_var: Option<&Value>,
+) -> (bool, bool) { // (has_break, has_continue)
+    let mut has_break = false;
+    let mut has_continue = false;
+    let mut i = 0;
+    while i < nodes.len() {
+        match &mut nodes[i] {
+            AST::Op(_, _) => {},
+            AST::Stmt(stmt, _) => {
+                match stmt {
+                    Stmt::For(ind_var, start, end, step, body) => {
+                        let mut builder = FunctionBuilder::new("hoist_break_continue");
+                        let break_cond_var = builder.full(false, &[]).unwrap();
+                        let continue_cond_var = builder.full(false, &[]).unwrap();
+                        let (inner_break, _inner_continue) = hoist_break_continue(body, Some(&break_cond_var), Some(&continue_cond_var));
+                        if inner_break {
+                            let mut new_body = vec![];
+                            // steal body
+                            std::mem::swap(&mut new_body, body);
+                            let new_ind_var = builder.full(0, &[]).unwrap();
+                            builder.assign(&new_ind_var, start).unwrap();
+                            replace_all_uses_with(&mut new_body, &ind_var, &new_ind_var);
+                            let ind_cond = builder.elementwise(&[new_ind_var.clone(), end.clone()], "lt").unwrap();
+                            let cond_var = builder.elementwise(&[ind_cond, break_cond_var.clone()], "and").unwrap();
+                            let cond_var = builder.elementwise(&[cond_var, continue_cond_var.clone()], "and").unwrap();
+                            builder.while_(&cond_var, |builder| {
+                                for node in new_body {
+                                    builder.insert_node(node);
+                                }
+                                let new_ind_var_ = builder.elementwise(&[new_ind_var.clone(), step.clone()], "add").unwrap();
+                                builder.assign(&new_ind_var, &new_ind_var_).unwrap();
+                                let ind_cond = builder.elementwise(&[new_ind_var.clone(), end.clone()], "lt").unwrap();
+                                let cond_var_ = builder.elementwise(&[ind_cond, break_cond_var], "and").unwrap();
+                                let cond_var_ = builder.elementwise(&[cond_var_, continue_cond_var], "and").unwrap();
+                                builder.assign(&cond_var, &cond_var_).unwrap();
+                                Ok(())
+                            }).unwrap();
+                        }
+
+
+                    }
+                    _ => {}
+                }            
+            }
+        }
+    }
+    if break_var.is_some() && continue_var.is_some() {
+        let (has_break_, has_continue_) = protect_block_break_continue(nodes, break_var.unwrap(), continue_var.unwrap());
+        has_break |= has_break_;
+        has_continue |= has_continue_;
+    }
+
+    (has_break, has_continue)
+}
+
+fn hoist_break(mut f: Function) -> Result<Function> {
+    for node in f.body.iter_mut() {
+        match node {
+            AST::Op(_, _) => {},
+            AST::Stmt(stmt, _) => {
+                match stmt {
+                    Stmt::For(_, _, _, _, body) => {
+                        for i in 0..body.len() {
+                            if let AST::Stmt(Stmt::Break, _) = body[i] {
+                                body.truncate(i);
+                                break;
+                            }
+                            
+                        }
+
+                    }
+                    _ => {}
+                }
+            }
+        }
+    }
+    todo!()
+}
 
 
 // #[test]
