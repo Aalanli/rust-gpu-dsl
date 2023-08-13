@@ -254,7 +254,7 @@ impl AST {
 pub enum Stmt {
     Function(Function),
     For(Value, Value, Value, Value, Vec<AST>), // induction_var, start, end, step, body
-    While(Value, Vec<AST>),                    // condition, body
+    While(Vec<AST>, Value, Vec<AST>),         // calculate_condition, condition, body
     If(Value, Vec<AST>, Vec<AST>),             // condition, then, else
     Assign(Value, Value),                      // lhs, rhs
     Return(Vec<Value>),
@@ -1057,12 +1057,15 @@ impl FunctionBuilder {
         Ok(())
     }
 
-    pub fn while_(&mut self, cond: &Value, scope: impl FnOnce(&mut Self) -> Result<()>) -> Result<()> {
+    pub fn while_(&mut self, cond: impl FnOnce(&mut Self) -> Result<Value>, body: impl FnOnce(&mut Self) -> Result<()>) -> Result<()> {
         let loc = std::panic::Location::caller().into();
         self.scope.push(vec![]);
-        scope(self)?;
-        let while_scope = self.scope.pop().unwrap();
-        let op = AST::Stmt(Stmt::While(cond.clone(), while_scope), loc);
+        let cond = cond(self)?;
+        let cond_block = self.scope.pop().unwrap();
+        self.scope.push(vec![]);
+        body(self)?;
+        let while_block = self.scope.pop().unwrap();
+        let op = AST::Stmt(Stmt::While(cond_block, cond.clone(), while_block), loc);
         self.scope.last_mut().unwrap().push(op);
         Ok(())
     }
@@ -1126,8 +1129,11 @@ impl FunctionBuilder {
                         FunctionBuilder::visit_terminals(ast, f);
                     }
                 }
-                Stmt::While(_, body) => {
+                Stmt::While(cond_block, _, body) => {
                     for ast in body {
+                        FunctionBuilder::visit_terminals(ast, f);
+                    }
+                    for ast in cond_block {
                         FunctionBuilder::visit_terminals(ast, f);
                     }
                 }
@@ -1227,10 +1233,11 @@ fn replace_all_uses_with(nodes: &mut [AST], from: &Value, to: &Value) {
                         }
                         replace_all_uses_with(body, from, to);
                     }
-                    Stmt::While(cond, body) => {
+                    Stmt::While(cond_block, cond, body) => {
                         if cond == from {
                             *cond = to.clone();
                         }
+                        replace_all_uses_with(cond_block, from, to);
                         replace_all_uses_with(body, from, to);
                     }
                     Stmt::If(cond, then, else_) => {
@@ -1266,82 +1273,6 @@ fn replace_all_uses_with(nodes: &mut [AST], from: &Value, to: &Value) {
     }
 }
 
-enum Cond {
-    AND(Vec<Cond>),
-    OR(Vec<Cond>),
-    NOT(Box<Cond>),
-    Val(Value),
-}
-
-fn has_pred_break(stmt: &Stmt) -> bool {
-    match stmt {
-        Stmt::If(_, then, else_) => {
-            then.iter().filter_map(|x| x.get_stmt_ref()).map(|x| has_pred_break(x)).any(|x| x)
-            || else_.iter().filter_map(|x| x.get_stmt_ref()).map(|x| has_pred_break(x)).any(|x| x)
-        }
-        _ => false
-    }
-}
-
-fn remove_unecessary_loop(stmts: &mut Vec<AST>) {
-    let mut i = 0;
-    while i < stmts.len() {
-        let mut body_stmts = vec![];
-        if let Some(stmt) = stmts[i].get_stmt_mut() {
-            match stmt {
-                Stmt::For(ind_var, start, _, _, body) => {
-                    for j in 0..body.len() {
-                        if let AST::Stmt(Stmt::Break, _) = body[j] {
-                            body.truncate(j);
-                            replace_all_uses_with(body, ind_var, start);
-                            remove_unecessary_loop(body);
-                            std::mem::swap(&mut body_stmts, body);
-                            break;
-                        }
-                    }
-                },
-                Stmt::While(_, body) => {
-                    for j in 0..body.len() {
-                        if let AST::Stmt(Stmt::Break, _) = body[j] {
-                            body.truncate(j);
-                            remove_unecessary_loop(body);
-                            std::mem::swap(&mut body_stmts, body);
-                            break;
-                        }
-                    }
-                }
-                _ => {}
-            }
-        }
-        if body_stmts.len() > 0 {
-            let old_len = body_stmts.len();
-            stmts.splice(i..i+1, body_stmts);
-            i += old_len - 1;
-        }
-        i += 1;
-    }
-}
-
-// fn protect_block_break(nodes: &mut Vec<AST>, break_cond_var: &Value) -> bool {
-//     let mut i = 0;
-//     let mut has_break = false;
-//     while i < nodes.len() {
-//         if let Some(stmt) = nodes[i].get_stmt_mut() {
-//             if let Stmt::If(_, _, _) = stmt {
-//                 has_break = remove_pred_break(stmt, break_cond_var);
-//             }
-//         }
-//         if has_break {
-//             let mut rest: Vec<_> = nodes.drain(i+1..).collect();
-//             protect_block_break(&mut rest, break_cond_var);
-//             let if_stmt = Stmt::If(break_cond_var.clone(), rest, vec![]);
-//             nodes.push(AST::Stmt(if_stmt, nodes[i].loc().clone()));
-//             break;
-//         }
-//         i += 1;
-//     }
-//     has_break
-// }
 
 fn remove_predicated_break_continue(
     stmt: &mut Stmt,
@@ -1485,18 +1416,18 @@ fn hoist_break_continue(
                             let ind_cond = builder.elementwise(&[new_ind_var.clone(), end.clone()], "lt").unwrap();
                             let cond_var = builder.elementwise(&[ind_cond, break_cond_var.clone()], "and").unwrap();
                             let cond_var = builder.elementwise(&[cond_var, continue_cond_var.clone()], "and").unwrap();
-                            builder.while_(&cond_var, |builder| {
-                                for node in new_body {
-                                    builder.insert_node(node);
-                                }
-                                let new_ind_var_ = builder.elementwise(&[new_ind_var.clone(), step.clone()], "add").unwrap();
-                                builder.assign(&new_ind_var, &new_ind_var_).unwrap();
-                                let ind_cond = builder.elementwise(&[new_ind_var.clone(), end.clone()], "lt").unwrap();
-                                let cond_var_ = builder.elementwise(&[ind_cond, break_cond_var], "and").unwrap();
-                                let cond_var_ = builder.elementwise(&[cond_var_, continue_cond_var], "and").unwrap();
-                                builder.assign(&cond_var, &cond_var_).unwrap();
-                                Ok(())
-                            }).unwrap();
+                            // builder.while_(&cond_var, |builder| {
+                            //     for node in new_body {
+                            //         builder.insert_node(node);
+                            //     }
+                            //     let new_ind_var_ = builder.elementwise(&[new_ind_var.clone(), step.clone()], "add").unwrap();
+                            //     builder.assign(&new_ind_var, &new_ind_var_).unwrap();
+                            //     let ind_cond = builder.elementwise(&[new_ind_var.clone(), end.clone()], "lt").unwrap();
+                            //     let cond_var_ = builder.elementwise(&[ind_cond, break_cond_var], "and").unwrap();
+                            //     let cond_var_ = builder.elementwise(&[cond_var_, continue_cond_var], "and").unwrap();
+                            //     builder.assign(&cond_var, &cond_var_).unwrap();
+                            //     Ok(())
+                            // }).unwrap();
                         }
 
 
