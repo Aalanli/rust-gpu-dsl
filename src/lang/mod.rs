@@ -139,12 +139,29 @@ impl Type {
             shape: self.shape.clone(),
         }
     }
+
+    pub fn eltype(&self) -> &ElType {
+        &self.eltype
+    }
 }
 
 #[derive(Clone, PartialEq, Eq, Debug)]
 pub enum ElType {
     Ptr(Dtype),
     Val(Dtype),
+}
+
+impl ElType {
+    pub fn bits(&self) -> usize {
+        match self {
+            ElType::Ptr(_) => 64,
+            ElType::Val(dtype) => match dtype {
+                Dtype::I1 => 8,
+                Dtype::I32 => 32,
+                Dtype::F32 => 32,
+            },
+        }
+    }
 }
 
 #[derive(Clone, PartialEq, Eq, Debug)]
@@ -730,51 +747,236 @@ impl DotOp {
 
 #[derive(Debug)]
 pub struct ElementWiseOp {
-    pub name: String,
+    pub name: ElementwiseFnOption,
     pub args: Vec<Value>,
     pub output: Value,
 }
 
-impl ElementWiseOp {
-    pub fn build(name: impl Into<String>, args: &[Value]) -> Result<Self> {
-        let repr_arg = args.first().ok_or(Error::msg("args cannot be empty"))?;
-        let oshape = repr_arg.type_of().shape().to_vec();
-        for s in args.iter().skip(1).map(|x| x.type_of().shape()) {
-            if s != oshape {
-                return Err(Error::msg(format!(
-                    "Elementwise operation requires all arguments to have the same shape, got {:?} and {:?}",
-                    oshape, s
-                )));
+#[derive(Debug)]
+pub enum ElementwiseFnOption {
+    Intrinsic(IntrinsicElementwise),
+    Extern(String, ElType),
+}
+
+#[derive(Debug)]
+pub enum IntrinsicElementwise {
+    Add, Sub, Mul, Div, Neg, Rem,
+    Pow, Exp, Log, Sqrt,
+    Eq, Ne, Lt, Gt, Le, Ge,
+    And, Or, Xor, Not,
+    LogicalAnd, LogicalOr, // short circuiting
+    Shr, Shl,
+    Ceil, Floor, Round,
+    Max, Min,
+    Cast(Type),
+    Where,
+}
+
+impl IntrinsicElementwise {
+    pub fn num_operands(&self) -> usize {
+        match self {
+            Self::Add | Self::Sub | Self::Mul | Self::Div | Self::Rem | Self::Pow => 2,
+            Self::Neg | Self::Not => 1,
+            Self::Exp | Self::Log | Self::Sqrt => 1,
+            Self::Eq | Self::Ne | Self::Lt | Self::Gt | Self::Le | Self::Ge => 2,
+            Self::And | Self::Or | Self::Xor => 2,
+            Self::LogicalAnd | Self::LogicalOr => 2,
+            Self::Shr | Self::Shl => 2,
+            Self::Ceil | Self::Floor | Self::Round => 1,
+            Self::Max | Self::Min => 2,
+            Self::Cast(_) => 1,
+            Self::Where => 3,
+        }
+    }
+
+    pub fn verify_type(&self, vals: &[Value]) -> Result<()> {
+        if self.num_operands() != vals.len() {
+            return Err(Error::msg(format!(
+                "Intrinsic {:?} requires {} operands, got {}",
+                self,
+                self.num_operands(),
+                vals.len()
+            )));
+        }
+        let a = vals[0].type_of();
+        if vals.iter().map(|x| x.type_of().shape() == a.shape()).all(|x| x) {
+            return Err(Error::msg(format!(
+                "Intrinsic {:?} requires all operands to have the same shape, got {:?}",
+                self, vals.iter().map(|x| x.type_of()).collect::<Vec<_>>()
+            )));
+        }
+
+        if self.num_operands() == 2 {
+            let b = vals[1].type_of();
+            let all_same = a == b;
+            match self {
+                Self::Add | Self::Sub => {
+                    if !((a.is_float() && b.is_float()) || (a.is_int() && b.is_int()) || (a.is_ptr() && b.is_int()) || (a.is_int() && b.is_ptr())) {
+                        return Err(Error::msg(format!(
+                            "+ requires either floating + floating, int + int, int + ptr or ptr + int, got {:?}",
+                            vals.iter().map(|x| x.type_of()).collect::<Vec<_>>()
+                        )));
+                    }
+                }
+                Self::Mul | Self::Div | Self::Max | Self::Min => {
+                    if !all_same && !(a.is_float() || a.is_int()) {
+                        return Err(Error::msg(format!(
+                            "Intrinsic {:?} requires all operands to have the same element type and either floating or integral, got {:?}",
+                            self, vals.iter().map(|x| x.type_of()).collect::<Vec<_>>()
+                        )));
+                    }
+                }
+                Self::Rem => {
+                    if !all_same && !a.is_int() {
+                        return Err(Error::msg(format!(
+                            "Intrinsic {:?} requires all operands to have the same element type and integral, got {:?}",
+                            self, vals.iter().map(|x| x.type_of()).collect::<Vec<_>>()
+                        )));
+                    }
+                }
+                Self::Pow => {
+                    if !all_same && !a.is_float() {
+                        return Err(Error::msg(format!(
+                            "Intrinsic {:?} requires all operands to have the same element type and floating, got {:?}",
+                            self, vals.iter().map(|x| x.type_of()).collect::<Vec<_>>()
+                        )));
+                    }
+                }
+                Self::Eq | Self::Ne | Self::Lt | Self::Gt | Self::Le | Self::Ge => {
+                    if !all_same {
+                        return Err(Error::msg(format!(
+                            "Intrinsic {:?} requires all operands to have the same element type, got {:?}",
+                            self, vals.iter().map(|x| x.type_of()).collect::<Vec<_>>()
+                        )));
+                    }
+                }
+                Self::And | Self::Or | Self::Xor => {
+                    if !(all_same && (a.is_int() || a.is_bool())) {
+                        return Err(Error::msg(format!(
+                            "Intrinsic {:?} requires all operands to have the same element type and either integral or boolean, got {:?}",
+                            self, vals.iter().map(|x| x.type_of()).collect::<Vec<_>>()
+                        )));
+                    }
+                }
+                Self::LogicalAnd | Self::LogicalOr => {
+                    if !(all_same && a.is_bool()) {
+                        return Err(Error::msg(format!(
+                            "Intrinsic {:?} requires all operands to have the same element type and boolean, got {:?}",
+                            self, vals.iter().map(|x| x.type_of()).collect::<Vec<_>>()
+                        )));
+                    }
+                }
+                Self::Shl | Self::Shr => {
+                    if !(b.is_int() && (a.is_int() || a.is_ptr() || a.is_bool())) {
+                        return Err(Error::msg(format!(
+                            "Intrinsic {:?} requires first operand to be either integral boolean or pointer and the second to be integral, got {:?}",
+                            self, vals.iter().map(|x| x.type_of()).collect::<Vec<_>>()
+                        )));
+                    }
+                }
+                _ => {}
+            }
+        } else if self.num_operands() == 3 {
+            if let Self::Where = self {
+                let b = vals[1].type_of();
+                let c = vals[2].type_of();
+                if !(a.is_bool() && b == c) {
+                    return Err(Error::msg(format!(
+                        "Intrinsic {:?} requires first operand to be boolean and the other two to have the same element type, got {:?}",
+                        self, vals.iter().map(|x| x.type_of()).collect::<Vec<_>>()
+                    )));
+                }
+            }
+        } else {
+            match self {
+                Self::Neg => {
+                    if !a.is_float() && !a.is_int() {
+                        return Err(Error::msg(format!(
+                            "Intrinsic {:?} requires all operands to have either floating or integral element type, got {:?}",
+                            self, vals.iter().map(|x| x.type_of()).collect::<Vec<_>>()
+                        )));
+                    }
+                }
+                Self::Not => {
+                    if !a.is_bool() {
+                        return Err(Error::msg(format!(
+                            "Intrinsic {:?} requires all operands to have boolean element type, got {:?}",
+                            self, vals.iter().map(|x| x.type_of()).collect::<Vec<_>>()
+                        )));
+                    }
+                },
+                Self::Exp | Self::Log | Self::Sqrt | Self::Ceil | Self::Floor | Self::Round => {
+                    if !a.is_float() {
+                        return Err(Error::msg(format!(
+                            "Intrinsic {:?} requires all operands to have floating element type, got {:?}",
+                            self, vals.iter().map(|x| x.type_of()).collect::<Vec<_>>()
+                        )));
+                    }
+                },
+                Self::Cast(_) => {}
+                _ => {}
             }
         }
+        Ok(())
+    }
+
+    fn binary_upcast<'a>(a: &'a Type, b: &'a Type) -> &'a Type {
+        if a.is_ptr() {
+            return a;
+        } else if b.is_ptr() {
+            return b;
+        } else if a.is_float() {
+            return a;
+        } else if b.is_float() {
+            return b;
+        } else if a.is_int() {
+            return a;
+        } else if b.is_int() {
+            return b;
+        } else {
+            return a;
+        }
+    }
+
+    pub fn return_type<'a>(&self, vals: &'a [Value]) -> &'a Type {
+        if self.num_operands() == 2 {
+            return Self::binary_upcast(&vals[0].type_of(), &vals[1].type_of());
+        } else if self.num_operands() == 3 {
+            if let Self::Where = self {
+                return vals[1].type_of();
+            }
+            unreachable!();
+        } else if self.num_operands() == 1 {
+            return vals[0].type_of();
+        }
+        unreachable!()
+    }
+}
+
+
+impl ElementWiseOp {
+    pub fn build(f: ElementwiseFnOption, args: &[Value]) -> Result<Self> {
+        let repr_arg = args.first().ok_or(Error::msg("args cannot be empty"))?;
+        let oshape = repr_arg.type_of().shape().to_vec();
+        if let ElementwiseFnOption::Intrinsic(op) = &f {
+            op.verify_type(args)?;
+        } // extern functions are not verified
+
+        let return_type = match &f {
+            ElementwiseFnOption::Intrinsic(a) => a.return_type(args).eltype.clone(),
+            ElementwiseFnOption::Extern(_, a) => a.clone(),
+        };
+
         let val = Value::new(Type::tensor(
-            repr_arg.type_of().eltype.clone(),
+            return_type,
             &oshape,
         ));
         Ok(ElementWiseOp {
-            name: name.into(),
+            name: f,
             args: args.into(),
             output: val.clone(),
         })
     }
-
-    // arith
-    pub fn add(a: &Value, b: &Value) -> Result<Self> {
-        if a.type_of() != b.type_of() && !(a.type_of().is_int() || a.type_of().is_float()) {
-            return Err(Error::msg(format!(
-                "add requires both inputs to have the same element type and either floating or integral, got {:?} and {:?}",
-                a.type_of(),
-                b.type_of()
-            )));
-        }
-        ElementWiseOp::build("add", &[a.clone(), b.clone()])
-    }
-
-    // TODO:
-    // arith: sub, mul, div, neg, rem
-    // floating: pow, exp, log, sqrt, etc.
-    // comparison: eq, ne, lt, gt, le, ge
-    // logical: and, or, xor, not
     
 }
 
@@ -832,12 +1034,7 @@ pub enum ReduceOpOption {
     Xor,
 }
 
-#[derive(Debug)]
-pub struct ElementWiseFn {
-    name: String,
-    args: Vec<Value>,
-    output: Value,
-}
+
 
 #[derive(Clone, Debug)]
 pub struct Value(Rc<ValueImpl>);
@@ -889,7 +1086,82 @@ pub struct FunctionBuilder {
     scope: Vec<Vec<AST>>,
 }
 
+macro_rules! binary_builder {
+    ($fn_name:ident, $enum_name:ident) => {
+        pub fn $fn_name(&mut self, a: &Value, b: &Value) -> Result<Value> {
+            let loc = std::panic::Location::caller().into();
+            let openum = OpEnum::ElementWise(ElementWiseOp::build(
+                ElementwiseFnOption::Intrinsic(IntrinsicElementwise::$enum_name),
+                &[a.clone(), b.clone()],
+            )?);
+            let val = openum.outputs().pop().unwrap().clone();
+            let op = AST::Op(openum, loc);
+            self.push_node(op)?;
+            Ok(val)
+        }
+    };
+}
+
+macro_rules! unary_builder {
+    ($fn_name:ident, $enum_name:ident) => {
+        pub fn $fn_name(&mut self, a: &Value) -> Result<Value> {
+            let loc = std::panic::Location::caller().into();
+            let openum = OpEnum::ElementWise(ElementWiseOp::build(
+                ElementwiseFnOption::Intrinsic(IntrinsicElementwise::$enum_name),
+                &[a.clone()],
+            )?);
+            let val = openum.outputs().pop().unwrap().clone();
+            let op = AST::Op(openum, loc);
+            self.push_node(op)?;
+            Ok(val)
+        }
+    };
+}
+
 impl FunctionBuilder {
+    binary_builder!(add, Add);
+    binary_builder!(sub, Sub);
+    binary_builder!(mul, Mul);
+    binary_builder!(div, Div);
+    binary_builder!(rem, Rem);
+    binary_builder!(pow, Pow);
+    binary_builder!(eq, Eq);
+    binary_builder!(ne, Ne);
+    binary_builder!(lt, Lt);
+    binary_builder!(gt, Gt);
+    binary_builder!(le, Le);
+    binary_builder!(ge, Ge);
+    binary_builder!(and, And);
+    binary_builder!(or, Or);
+    binary_builder!(logical_and, LogicalAnd);
+    binary_builder!(logical_or, LogicalOr);
+    binary_builder!(xor, Xor);
+    binary_builder!(shr, Shr);
+    binary_builder!(shl, Shl);
+    binary_builder!(max, Max);
+    binary_builder!(min, Min);
+
+    unary_builder!(neg, Neg);
+    unary_builder!(not, Not);
+    unary_builder!(exp, Exp);
+    unary_builder!(log, Log);
+    unary_builder!(sqrt, Sqrt);
+    unary_builder!(ceil, Ceil);
+    unary_builder!(floor, Floor);
+    unary_builder!(round, Round);
+
+    pub fn where_(&mut self, cond: &Value, a: &Value, b: &Value) -> Result<Value> {
+        let loc = std::panic::Location::caller().into();
+        let openum = OpEnum::ElementWise(ElementWiseOp::build(
+            ElementwiseFnOption::Intrinsic(IntrinsicElementwise::Where),
+            &[cond.clone(), a.clone(), b.clone()],
+        )?);
+        let val = openum.outputs().pop().unwrap().clone();
+        let op = AST::Op(openum, loc);
+        self.push_node(op)?;
+        Ok(val)
+    }
+
     pub fn new(name: impl Into<String>) -> Self {
         FunctionBuilder {
             name: name.into(),
@@ -1080,8 +1352,8 @@ impl FunctionBuilder {
     pub fn if_(
         &mut self,
         cond: &Value,
-        then: impl Fn(&mut Self) -> Result<()>,
-        else_: impl Fn(&mut Self) -> Result<()>,
+        then: impl FnOnce(&mut Self) -> Result<()>,
+        else_: impl FnOnce(&mut Self) -> Result<()>,
     ) -> Result<()> {
         let loc = std::panic::Location::caller().into();
         self.scope.push(vec![]);
@@ -1109,9 +1381,9 @@ impl FunctionBuilder {
         Ok(())
     }
 
-    pub fn elementwise(&mut self, args: &[Value], op_code: &str) -> Result<Value> {
+    pub fn extern_elementwise(&mut self, args: &[Value], op_code: &str, return_type: ElType) -> Result<Value> {
         let loc = std::panic::Location::caller().into();
-        let openum = OpEnum::ElementWise(ElementWiseOp::build(op_code, args)?);
+        let openum = OpEnum::ElementWise(ElementWiseOp::build(ElementwiseFnOption::Extern(op_code.into(), return_type), args)?);
         let val = openum.outputs().pop().unwrap().clone();
         let op = AST::Op(openum, loc);
         self.push_node(op)?;
@@ -1211,6 +1483,19 @@ impl FunctionBuilder {
     pub fn insert_node(&mut self, node: AST) {
         self.scope.last_mut().unwrap().push(node);
     }
+
+    pub fn pop_node(&mut self) -> Option<AST> {
+        self.scope.last_mut().unwrap().pop()
+    }
+
+    pub fn set_last_loc(&mut self, loc: Location) {
+        if let Some(node) = self.scope.last_mut().unwrap().last_mut() {
+            match node {
+                AST::Op(_, loc_) => *loc_ = loc,
+                AST::Stmt(_, loc_) => *loc_ = loc,
+            }
+        }
+    }
 }
 
 fn replace_all_uses_with(nodes: &mut [AST], from: &Value, to: &Value) {
@@ -1304,20 +1589,23 @@ fn remove_predicated_break_continue(
 
             i = 0;
             while i < else_.len() {
+                let loc = else_[i].loc();
                 if let Some(Stmt::Break) = else_[i].get_stmt_ref() {
-                    let not_op = OpEnum::ElementWise(ElementWiseOp::build("not",&[cond.clone()]).unwrap());                    
-                    let not_val = not_op.outputs().pop().unwrap().clone();
-                    else_.insert(i, AST::Op(not_op, else_[i].loc().clone()));
-                    i += 1;
-                    else_[i] = AST::Stmt(Stmt::Assign(break_cond_var.clone(), not_val), else_[i].loc().clone());
+                    let mut builder = FunctionBuilder::new("break");
+                    let not_val = builder.not(cond).unwrap();
+                    builder.set_last_loc(loc.clone());
+                    builder.assign(break_cond_var, &not_val).unwrap();
+                    builder.set_last_loc(loc.clone());
+                    else_.splice(i..i+1, builder.build_body().unwrap());
                     has_break = true;
                     break;
                 } else if let Some(Stmt::Continue) = else_[i].get_stmt_ref() {
-                    let not_op = OpEnum::ElementWise(ElementWiseOp::build("not",&[cond.clone()]).unwrap());                    
-                    let not_val = not_op.outputs().pop().unwrap().clone();
-                    else_.insert(i, AST::Op(not_op, else_[i].loc().clone()));
-                    i += 1;
-                    else_[i] = AST::Stmt(Stmt::Assign(continue_cond_var.clone(), not_val), else_[i].loc().clone());
+                    let mut builder = FunctionBuilder::new("break");
+                    let not_val = builder.not(cond).unwrap();
+                    builder.set_last_loc(loc.clone());
+                    builder.assign(continue_cond_var, &not_val).unwrap();
+                    builder.set_last_loc(loc.clone());
+                    else_.splice(i..i+1, builder.build_body().unwrap());
                     has_continue = true;
                     break;
                 }
@@ -1367,19 +1655,26 @@ fn protect_block_break_continue(
         }
 
         if has_break || has_continue {
-            let not_execute_rest = OpEnum::ElementWise(ElementWiseOp::build("or", &[break_cond_var.clone(), continue_cond_var.clone()]).unwrap());
-            let not_execute_continue_val = not_execute_rest.outputs()[0].clone();
-            let execute_rest = OpEnum::ElementWise(ElementWiseOp::build("not", &[not_execute_continue_val.clone()]).unwrap());
-            let execute_rest_val = execute_rest.outputs()[0].clone();
-            nodes.splice(i+1..i+1, [AST::Op(not_execute_rest, loc.clone()), AST::Op(execute_rest, loc.clone())]);
-            i += 2;
-
-            let mut rest: Vec<_> = nodes.drain(i+1..).collect();
-            let (has_break_, has_continue_) = hoist_break_continue(&mut rest, Some(break_cond_var), Some(continue_cond_var));
+            let mut builder = FunctionBuilder::new("break");
+            let mut rest_body: Vec<_> = nodes.drain(i..).collect();
+            let (has_break_, has_continue_) = hoist_break_continue(&mut rest_body, Some(break_cond_var), Some(continue_cond_var));
             has_break |= has_break_;
             has_continue |= has_continue_;
-            let if_stmt = Stmt::If(execute_rest_val, rest, vec![]);
-            nodes.push(AST::Stmt(if_stmt, nodes[i].loc().clone()));
+            
+            let has_break_or_continue = builder.or(break_cond_var, continue_cond_var).unwrap();
+            builder.set_last_loc(loc.clone());
+            let no_break_or_continue = builder.not(&has_break_or_continue).unwrap();
+            builder.set_last_loc(loc.clone());
+
+            builder.if_(&no_break_or_continue, |b| {
+                for node in rest_body {
+                    b.insert_node(node);
+                }
+                Ok(())
+            }, |_| {Ok(())}).unwrap();
+            builder.set_last_loc(loc.clone());
+
+            nodes.extend(builder.build_body().unwrap());
             break;
         }
         i += 1;
@@ -1413,9 +1708,9 @@ fn hoist_break_continue(
                             let new_ind_var = builder.full(0, &[]).unwrap();
                             builder.assign(&new_ind_var, start).unwrap();
                             replace_all_uses_with(&mut new_body, &ind_var, &new_ind_var);
-                            let ind_cond = builder.elementwise(&[new_ind_var.clone(), end.clone()], "lt").unwrap();
-                            let cond_var = builder.elementwise(&[ind_cond, break_cond_var.clone()], "and").unwrap();
-                            let cond_var = builder.elementwise(&[cond_var, continue_cond_var.clone()], "and").unwrap();
+                            // let ind_cond = builder.elementwise(&[new_ind_var.clone(), end.clone()], "lt").unwrap();
+                            // let cond_var = builder.elementwise(&[ind_cond, break_cond_var.clone()], "and").unwrap();
+                            // let cond_var = builder.elementwise(&[cond_var, continue_cond_var.clone()], "and").unwrap();
                             // builder.while_(&cond_var, |builder| {
                             //     for node in new_body {
                             //         builder.insert_node(node);
