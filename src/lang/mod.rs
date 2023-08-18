@@ -3,6 +3,7 @@ use std::ops::{Deref, DerefMut, Range};
 use std::rc::Rc;
 
 use anyhow::{Context, Error, Result};
+use super::utils::Doc;
 
 // mutable value semantics, lol
 // we adopt mutable value semantics in the tensor program for the sake of simplicity, so no aliasing, only mutation via
@@ -404,6 +405,8 @@ impl ProgramIDOp {
         let val = Value::new(Type::scalar(ElType::Val(Dtype::I32)));
         ProgramIDOp { output: val.clone() }
     }
+
+    
 }
 
 #[derive(Debug)]

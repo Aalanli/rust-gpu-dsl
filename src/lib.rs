@@ -8,6 +8,7 @@ use std::thread::Scope;
 use anyhow::{Error, Result};
 
 pub mod lang;
+pub mod utils;
 mod linear_ir;
 
 struct TraitRegistry {
