@@ -1,4 +1,7 @@
+use core::panic;
 use std::cell::RefCell;
+use std::collections::{HashMap, HashSet};
+use std::hash::{Hash, Hasher};
 use std::ops::{Deref, DerefMut, Range};
 use std::rc::Rc;
 
@@ -211,193 +214,145 @@ impl From<bool> for Constant {
     }
 }
 
-#[derive(Debug)]
-pub enum AST {
-    Op(OpEnum, Location),
-    Stmt(Stmt, Location),
-}
 
-impl AST {
-    pub fn is_stmt(&self) -> bool {
-        match self {
-            Self::Stmt(_, _) => true,
-            _ => false,
-        }
-    }
+// pub type Op = Rc<Operation>;
 
-    pub fn is_op(&self) -> bool {
-        match self {
-            Self::Op(_, _) => true,
-            _ => false,
-        }
-    }
+#[derive(Debug, Clone)]
+pub struct Op(Rc<Operation>);
 
-    pub fn get_op(self) -> Result<OpEnum> {
-        match self {
-            Self::Op(op, _) => Ok(op),
-            _ => Err(Error::msg("AST is not an Op")),
-        }
-    }
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+pub struct OpId(usize);
 
-    pub fn get_stmt(self) -> Result<Stmt> {
-        match self {
-            Self::Stmt(stmt, _) => Ok(stmt),
-            _ => Err(Error::msg("AST is not a Stmt")),
-        }
-    }
 
-    pub fn get_stmt_ref(&self) -> Option<&Stmt> {
-        match self {
-            Self::Stmt(stmt, _) => Some(stmt),
-            _ => None,
-        }
-    }
+#[derive(Debug, Clone)]
+pub struct Block(Rc<BlockImpl>);
 
-    pub fn get_stmt_mut(&mut self) -> Option<&mut Stmt> {
-        match self {
-            Self::Stmt(stmt, _) => Some(stmt),
-            _ => None,
-        }
-    }
+impl Deref for Block {
+    type Target = BlockImpl;
 
-    pub fn loc(&self) -> &Location {
-        match self {
-            Self::Op(_, loc) => loc,
-            Self::Stmt(_, loc) => loc,
-        }
+    fn deref(&self) -> &Self::Target {
+        &self.0
     }
 }
 
-#[derive(Debug)]
-pub enum Stmt {
-    Function(Function),
-    For(Value, Value, Value, Value, Vec<AST>), // induction_var, start, end, step, body
-    While(Vec<AST>, Value, Vec<AST>),         // calculate_condition, condition, body
-    If(Value, Vec<AST>, Vec<AST>),             // condition, then, else
-    Assign(Value, Value),                      // lhs, rhs
-    Return(Vec<Value>),
-    Break,
-    Continue
+impl Hash for Block {
+    fn hash<H: Hasher>(&self, state: &mut H) {
+        Rc::as_ptr(&self.0).hash(state);
+    }
 }
 
-impl Stmt {
-    
+impl PartialEq for Block {
+    fn eq(&self, other: &Self) -> bool {
+        Rc::ptr_eq(&self.0, &other.0)
+    }
 }
+
+impl Eq for Block {}
+
+#[derive(Debug, Clone)]
+pub struct BlockImpl {
+    pub args: Vec<Value>,
+    pub body: Vec<Op>,
+}
+
+
+impl Op {
+    pub fn new(op: OpEnum, location: Location) -> Self {
+        Op(Rc::new(Operation::new(op, location)))
+    }
+}
+
+impl Deref for Op {
+    type Target = Operation;
+
+    fn deref(&self) -> &Self::Target {
+        &self.0
+    }
+}
+
+impl Hash for Op {
+    fn hash<H: Hasher>(&self, state: &mut H) {
+        Rc::as_ptr(&self.0).hash(state);
+    }
+}
+
+impl PartialEq for Op {
+    fn eq(&self, other: &Self) -> bool {
+        Rc::ptr_eq(&self.0, &other.0)
+    }
+}
+impl Eq for Op {}
 
 #[derive(Debug)]
-pub enum OpEnum {
-    ProgramID(ProgramIDOp), // output
-
-    Load(LoadOp), // ptr, mask, value, output
-    Store(StoreOp),               // ptr, value, mask
-
-    Reshape(ReshapeOp),      // input, shape, output
-    Permute(PermuteOp),      // input, permutation, output
-    Slice(SliceOp), // input, (begin, end), output
-    Expand(ExpandOp),              // input, dim, output
-    Broadcast(BroadcastOp),         // input, other, output
-
-    Reduce(ReduceOp), // input, dims, op, output
-    ElementWise(ElementWiseOp),          // for extensibility reasons
-    Dot(DotOp),            // a @ b = c
-
-    Full(FullOp),   // const_value, output
-    Arange(ArangeOp), // begin, end, output
+pub struct Operation {
+    location: Location,
+    op: OpEnum,
 }
 
-impl OpEnum {
-    pub fn inputs(&self) -> Vec<&Value> {
-        match self {
-            Self::ProgramID(op) => vec![],
-            Self::Load(op) => { 
-                let mut output = vec![&op.ptr];
-                if let Some(mask) = &op.mask {
-                    output.push(mask);
-                }
-                if let Some(value) = &op.value {
-                    output.push(value);
-                }
-                output
-            },
-
-            Self::Store(op) => {
-                let mut output = vec![&op.ptr, &op.value];
-                if let Some(mask) = &op.mask {
-                    output.push(mask);
-                }
-                output
-            },
-
-            Self::Reshape(op) => vec![&op.input],
-            Self::Permute(op) => vec![&op.input],
-            Self::Slice(op) => vec![&op.input],
-            Self::Expand(op) => vec![&op.input],
-            Self::Broadcast(op) => vec![&op.input, &op.other],
-            Self::Reduce(op) => vec![&op.input],
-            Self::ElementWise(op) => op.args.iter().collect(),
-            Self::Dot(op) => vec![&op.a, &op.b],
-            Self::Full(op) => vec![],
-            Self::Arange(op) => vec![],
-        }
+impl Operation {
+    pub fn new(op: OpEnum, location: Location) -> Self {
+        Operation { op, location }
     }
+}
 
-    pub fn inputs_mut(&mut self) -> Vec<&mut Value> {
-        match self {
-            Self::ProgramID(op) => vec![],
-            Self::Load(op) => { 
-                let mut output = vec![&mut op.ptr];
-                if let Some(mask) = &mut op.mask {
-                    output.push(mask);
-                }
-                if let Some(value) = &mut op.value {
-                    output.push(value);
-                }
-                output
-            },
+#[derive(Debug)]
+pub enum OpEnum { // could be a trait, once we have a better idea of the functions
+    ProgramID(ProgramIDOp),
 
-            Self::Store(op) => {
-                let mut output = vec![&mut op.ptr, &mut op.value];
-                if let Some(mask) = &mut op.mask {
-                    output.push(mask);
-                }
-                output
-            },
+    Load(LoadOp),
+    Store(StoreOp),
 
-            Self::Reshape(op) => vec![&mut op.input],
-            Self::Permute(op) => vec![&mut op.input],
-            Self::Slice(op) => vec![&mut op.input],
-            Self::Expand(op) => vec![&mut op.input],
-            Self::Broadcast(op) => vec![&mut op.input, &mut op.other],
-            Self::Reduce(op) => vec![&mut op.input],
-            Self::ElementWise(op) => op.args.iter_mut().collect(),
-            Self::Dot(op) => vec![&mut op.a, &mut op.b],
-            Self::Full(op) => vec![],
-            Self::Arange(op) => vec![],
-        }
-    }
+    Reshape(ReshapeOp),
+    Permute(PermuteOp),
+    Slice(SliceOp),
+    Expand(ExpandOp),
+    Broadcast(BroadcastOp),
 
-    pub fn outputs(&self) -> Vec<&Value> {
-        match self {
-            Self::ProgramID(op) => vec![&op.output],
-            Self::Load(op) => vec![&op.output],
-            Self::Store(op) => vec![],
-            Self::Reshape(op) => vec![&op.output],
-            Self::Permute(op) => vec![&op.output],
-            Self::Slice(op) => vec![&op.output],
-            Self::Expand(op) => vec![&op.output],
-            Self::Broadcast(op) => vec![&op.output],
-            Self::Reduce(op) => vec![&op.output],
-            Self::ElementWise(op) => vec![&op.output],
-            Self::Dot(op) => vec![&op.output],
-            Self::Full(op) => vec![&op.output],
-            Self::Arange(op) => vec![&op.output],
-        }
-    }
+    Reduce(ReduceOp),
+    ElementWise(ElementWiseOp),
+    Dot(DotOp),
+
+    Full(FullOp),
+    Arange(ArangeOp),
+
+    For(ForOp),
+    If(IfOp),
+    FunctionOp(FunctionOp),
+    Assign(AssignOp),
+}
+
+#[derive(Debug)]
+pub struct AssignOp {
+    pub lhs: Value,
+    pub rhs: Value,
+}
+
+
+#[derive(Debug)]
+pub struct ForOp {
+    pub induction_var: Value,
+    pub start: Value,
+    pub end: Value,
+    pub step: Value,
+    pub body: Block,
+}
+
+#[derive(Debug)]
+pub struct IfOp {
+    pub cond: Value,
+    pub then: Block,
+    pub else_: Block,
+}
+
+#[derive(Debug)]
+pub struct FunctionOp {
+    pub name: String,
+    pub body: Block
 }
 
 #[derive(Debug)]
 pub struct ProgramIDOp {
-    output: Value,
+    pub output: Value,
 }
 
 impl ProgramIDOp {
@@ -411,10 +366,10 @@ impl ProgramIDOp {
 
 #[derive(Debug)]
 pub struct LoadOp {
-    ptr: Value,
-    mask: Option<Value>,
-    value: Option<Value>,
-    output: Value,
+    pub ptr: Value,
+    pub mask: Option<Value>,
+    pub value: Option<Value>,
+    pub output: Value,
 }
 
 impl LoadOp {
@@ -431,9 +386,9 @@ impl LoadOp {
 
 #[derive(Debug)]
 pub struct StoreOp {
-    ptr: Value,
-    value: Value,
-    mask: Option<Value>,
+    pub ptr: Value,
+    pub value: Value,
+    pub mask: Option<Value>,
 }
 
 impl StoreOp {
@@ -449,9 +404,9 @@ impl StoreOp {
 
 #[derive(Debug)]
 pub struct ReshapeOp {
-    input: Value,
-    shape: Vec<usize>,
-    output: Value,
+    pub input: Value,
+    pub shape: Vec<usize>,
+    pub output: Value,
 }
 
 impl ReshapeOp {
@@ -1041,6 +996,10 @@ pub enum ReduceOpOption {
 
 #[derive(Clone, Debug)]
 pub struct Value(Rc<ValueImpl>);
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
+pub struct ValueId(usize);
+
 impl Value {
     fn new(type_of: Type) -> Self {
         Value(Rc::new(ValueImpl {
@@ -1061,11 +1020,22 @@ impl Value {
     pub fn name(&self) -> Option<String> {
         self.0.name_hint.borrow().clone()
     }
+
+    pub fn id(&self) -> usize {
+        Rc::as_ptr(&self.0) as usize
+    }
 }
 
 impl PartialEq for Value {
     fn eq(&self, other: &Self) -> bool {
         Rc::ptr_eq(&self.0, &other.0)
+    }
+}
+impl Eq for Value {}
+
+impl Hash for Value {
+    fn hash<H: Hasher>(&self, state: &mut H) {
+        Rc::as_ptr(&self.0).hash(state)
     }
 }
 
@@ -1767,6 +1737,293 @@ fn hoist_break(mut f: Function) -> Result<Function> {
     }
     todo!()
 }
+
+fn collect_outside_uses(f: &AST, uses: &mut HashSet<Value>, internal: &mut HashSet<Value>) {
+    let mut add_use = |v| {
+            if !internal.contains(v) {
+                uses.insert(v.clone());
+            }
+        };
+    match f {
+        AST::Op(op, _) => {
+            for input in op.inputs() {
+                add_use(input);
+            }
+            for output in op.outputs() {
+                internal.insert(output.clone());
+            }
+        }
+        AST::Stmt(stmt, _) => {
+            match stmt {
+                Stmt::For(ind_var, start, end, step, body) => {
+                    add_use(start);
+                    add_use(end);
+                    add_use(step);
+                    internal.insert(ind_var.clone());
+                    for node in body {
+                        collect_outside_uses(node, uses, internal);
+                    }
+                }
+                Stmt::While(cond, cond_res, body) => {
+                    internal.insert(cond_res.clone());
+                    for node in cond {
+                        collect_outside_uses(node, uses, internal);
+                    }
+                    for node in body {
+                        collect_outside_uses(node, uses, internal);
+                    }
+                }
+                Stmt::If(cond, then, else_) => {
+                    add_use(cond);
+                    for node in then {
+                        collect_outside_uses(node, uses, internal);
+                    }
+                    for node in else_ {
+                        collect_outside_uses(node, uses, internal);
+                    }
+                }
+                Stmt::Assign(lhs, rhs) => {
+                    add_use(lhs);
+                    add_use(rhs);
+                }
+                _ => {}
+            }
+        }
+    }
+}
+
+fn convert_to_operation(mut f: AST, remap: &mut HashMap<Value, Value>) -> Result<Op> {
+    let mut get_remap = |v| {
+        if let Some(v) = remap.get(&v) {
+            v.clone()
+        } else {
+            v
+        }
+    };
+
+    match f {
+        AST::Op(op, loc) => { todo!() },
+        AST::Stmt(stmt, loc) => {
+            match stmt {
+                Stmt::For(ind_var, start, end, step, body) => {
+                    let mut builder = FunctionBuilder::new("for");
+
+                },
+                _ => {}
+                // Stmt::While(_, _, _) => todo!(),
+                // Stmt::If(_, _, _) => todo!(),
+                // Stmt::Assign(_, _) => todo!(),
+                // Stmt::Return(_) => todo!(),
+                // Stmt::Break => todo!(),
+                // Stmt::Continue => todo!(),
+                // Stmt::Function(_) => todo!(),
+            }
+        }
+    }
+
+    todo!()
+}
+
+
+pub struct FlowAnalysis {
+    pub source: HashMap<Value, Op>,
+    pub uses: HashMap<Value, Vec<Op>>,
+    pub parent_block: HashMap<Op, Block>,
+    pub block_parent: HashMap<Block, Op>,
+}
+
+impl FlowAnalysis {
+    fn visit(&mut self, op: &Op, parent_block: Option<&Block>) {
+        for outputs in op.outputs() {
+            self.source.insert(outputs.clone(), op.clone());
+        }
+        for input in op.inputs() {
+            if let Some(o) = self.source.get(input) {
+                self.uses.entry(input.clone()).or_default().push(o.clone());
+            }
+        }
+
+        if let Some(parent_block) = parent_block {
+            self.parent_block.insert(op.clone(), parent_block.clone());
+        }
+
+        for block in op.blocks() {
+            self.block_parent.insert(block.clone(), op.clone());
+            for op in block.body.iter() {
+                self.visit(op, Some(block));
+            }
+        }
+    }
+
+    pub fn new(op: &Op) -> Self {
+        let mut s = Self {
+            source: HashMap::new(),
+            uses: HashMap::new(),
+            parent_block: HashMap::new(),
+            block_parent: HashMap::new(),
+        };
+        s.visit(op, None);
+        s
+    }
+
+    pub fn val_source(&self, val: &Value) -> Option<&Op> {
+        self.source.get(val)
+    }
+
+    pub fn val_uses(&self, val: &Value) -> Option<&Vec<Op>> {
+        self.uses.get(val)
+    }
+}
+
+pub fn collect(op: &Op, f: impl Fn(&Op) -> bool) -> Vec<Op> {
+    let mut ops = vec![];
+    let mut worklist = vec![op];
+    while let Some(op) = worklist.pop() {
+        if f(op) {
+            ops.push(op.clone());
+            worklist.extend(op.blocks().iter().flat_map(|x| x.body.iter()));
+        }
+    }
+    ops
+}
+
+pub struct DCE {
+    pub value_live: HashSet<Value>,
+    pub op_live: HashSet<Op>,
+}
+
+impl DCE {
+
+    pub fn is_live(&self, val: &Value) -> bool {
+        self.value_live.contains(val)
+    }
+
+    pub fn mark_live(&mut self, val: &Value) {
+        self.value_live.insert(val.clone());
+    }
+
+
+    pub fn on_op(&mut self, op: &Op, flow: &FlowAnalysis) {
+        match &op.op {
+            OpEnum::Store(_) => {
+                for i in op.inputs() {
+                    self.mark_live(i);
+                }
+            }
+            OpEnum::If(if_op) => {
+                for i in if_op.yields.iter() {
+                    if self.is_live(i) {
+                        let yarg = &if_op.yield_to_term_arg[i];
+                        self.mark_live(yarg);
+                    }
+                }
+                self.on_block(&if_op.then, flow);
+                self.on_block(&if_op.else_, flow);
+                for i in if_op.then.args.iter().chain(if_op.else_.args.iter()) {
+                    if self.is_live(i) {
+                        let yarg = &if_op.block_arg_to_carry[i];
+                        self.mark_live(yarg);
+                    }
+                }
+                if if_op.carries.iter().any(|x| self.is_live(x)) {
+                    self.mark_live(&if_op.cond);
+                }
+            }
+            OpEnum::Loop(loop_op) => {
+                if let Terminator::LoopYield(loop_term) = &loop_op.body.terminator {
+                    for (i, v) in loop_op.yields.iter().enumerate() {
+                        if self.is_live(v) {
+                            self.mark_live(&loop_term.rest[i]);
+                        }
+                    }
+                    self.on_block(&loop_op.body, flow);
+                    for (i, v) in loop_op.body.args.iter().enumerate() {
+                        if self.is_live(v) {
+                            self.mark_live(&loop_op.uses[i]);
+                        }
+                    }
+                } else {
+                    panic!();
+                }
+            }
+            _ => {
+                if op.outputs().into_iter().any(|x| self.is_live(x)) {
+                    self.op_live.insert(op.clone());
+                    for input in op.inputs() {
+                        self.mark_live(input);
+                    }
+                }
+            }
+        }
+    }
+
+    pub fn on_block(&mut self, block: &Block, flow: &FlowAnalysis) {
+        match &block.terminator {
+            Terminator::LoopYield(LoopYield { continue_cond, rest }) => {
+                self.mark_live(continue_cond);
+                loop {
+                    let yield_live = rest.iter().map(|x| self.is_live(x));
+                    let arg_live = block.args.iter().map(|x| self.is_live(x));
+                    let changed = yield_live.zip(arg_live).any(|(x, y)| x != y);
+                    if !changed {
+                        break;
+                    }
+                    
+                    for op in block.body.iter().rev() {
+                        self.on_op(op, flow);
+                    }
+
+                }
+            }
+            Terminator::Yield(Yield { values }) => {
+            }
+        }
+    }
+
+    // pub fn run(op: &Op, flow: &FlowAnalysis) -> Self {
+    //     let mut v_live = HashSet::new();
+    //     let mut op_live = HashSet::new();
+
+
+    //     let mut worklist = collect(op, |op| {
+    //         if let OpEnum::Store(_) = op.op {
+    //             true
+    //         } else {
+    //             false
+    //         }
+    //     });
+
+    //     while let Some(op) = worklist.pop() {
+    //         if !op_live.contains(&op) {
+    //             op_live.insert(op.clone());
+    //             for input in op.inputs() {
+    //                 v_live.insert(input.clone());
+    //                 if let Some(o) = flow.val_source(input) {
+    //                     worklist.push(o.clone());
+    //                 }
+    //             }
+
+    //             if let Some(par_block) = flow.parent_block.get(&op) {
+    //                 if let Some(par_op) = flow.block_parent.get(par_block) {
+    //                     worklist.push(par_op.clone());
+    //                 }
+    //             }
+    //         }
+
+    //     }
+        
+
+    //     Self { value_live: v_live, op_live }
+    // }
+}
+
+pub enum Encoding {
+    Shared(SharedEncoding),
+    Local(LocalEncoding),
+}
+
+pub struct SharedEncoding {}
+pub struct LocalEncoding {}
 
 
 // #[test]
