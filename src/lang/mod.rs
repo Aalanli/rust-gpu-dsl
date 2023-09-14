@@ -6,6 +6,8 @@ use std::ops::{Deref, DerefMut, Range};
 use std::rc::Rc;
 
 use anyhow::{Context, Error, Result};
+use crate::AsAny;
+
 use super::utils::Doc;
 
 // mutable value semantics, lol
@@ -215,6 +217,59 @@ impl From<bool> for Constant {
 }
 
 
+
+#[derive(Clone, Debug)]
+pub struct Value(Rc<ValueImpl>);
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
+pub struct ValueId(usize);
+
+impl Value {
+    fn new(type_of: Type) -> Self {
+        Value(Rc::new(ValueImpl {
+            type_of,
+            name_hint: RefCell::new(None),
+        }))
+    }
+
+    pub fn type_of(&self) -> &Type {
+        &self.0.type_of
+    }
+
+    pub fn name_hint(self, name: impl Into<String>) -> Self {
+        self.0.name_hint.replace(Some(name.into()));
+        self
+    }
+
+    pub fn name(&self) -> Option<String> {
+        self.0.name_hint.borrow().clone()
+    }
+
+    pub fn id(&self) -> usize {
+        Rc::as_ptr(&self.0) as usize
+    }
+}
+
+impl PartialEq for Value {
+    fn eq(&self, other: &Self) -> bool {
+        Rc::ptr_eq(&self.0, &other.0)
+    }
+}
+impl Eq for Value {}
+
+impl Hash for Value {
+    fn hash<H: Hasher>(&self, state: &mut H) {
+        Rc::as_ptr(&self.0).hash(state)
+    }
+}
+
+#[derive(Debug)]
+struct ValueImpl {
+    type_of: Type,
+    name_hint: RefCell<Option<String>>,
+}
+
+
 // pub type Op = Rc<Operation>;
 
 #[derive(Debug, Clone)]
@@ -260,6 +315,26 @@ impl Op {
     pub fn new(op: OpEnum, location: Location) -> Self {
         Op(Rc::new(Operation::new(op, location)))
     }
+
+    pub fn location(&self) -> &Location {
+        &self.0.location
+    }
+
+    pub fn inputs(&self) -> Vec<&Value> {
+        self.0.op.inputs()
+    }
+
+    pub fn outputs(&self) -> Vec<&Value> {
+        self.0.op.outputs()
+    }
+
+    pub fn blocks(&self) -> Vec<&Block> {
+        self.0.op.blocks()
+    }
+
+    pub fn internal_as_any(&self) -> &dyn std::any::Any {
+        self.0.op.internal_as_any()
+    }
 }
 
 impl Deref for Op {
@@ -295,7 +370,134 @@ impl Operation {
     }
 }
 
-#[derive(Debug)]
+
+use std::any::TypeId;
+pub struct OpVisitor<V> {
+    overloads: HashMap<TypeId, fn(&mut Self, &Op)>,
+    overload_visit_block: Option<fn(&mut Self, &Block)>,
+    overload_visit_value: Option<fn(&mut Self, &Value)>,
+    pub state: V
+}
+
+impl<V> OpVisitor<V> {
+    pub fn new(state: V) -> Self {
+        OpVisitor {
+            overloads: HashMap::new(),
+            overload_visit_block: None,
+            overload_visit_value: None,
+            state,
+        }
+    }
+    
+    pub fn overload<T: 'static>(&mut self, f: fn(&mut Self, &Op)) {
+        self.overloads.insert(TypeId::of::<T>(), f);
+    }
+
+    pub fn overload_visit_block(&mut self, f: fn(&mut Self, &Block)) {
+        self.overload_visit_block = Some(f);
+    }
+
+    pub fn overload_visit_value(&mut self, f: fn(&mut Self, &Value)) {
+        self.overload_visit_value = Some(f);
+    }
+
+    pub fn visit(&mut self, op: &Op) {
+        if let Some(overload) = self.overloads.get(&op.internal_as_any().type_id()) {
+            overload(self, op);
+        } else {
+            if let Some(f) = self.overload_visit_value {
+                for v in op.inputs() {
+                    f(self, v);
+                }
+            }
+
+            for b in op.blocks() {
+                if let Some(f) = self.overload_visit_block {
+                    f(self, b);
+                } else {
+                    if let Some(f) = self.overload_visit_value {
+                        for v in b.args.iter() {
+                            f(self, v);
+                        }
+                    }
+                    for op in b.body.iter() {
+                        self.visit(op);
+                    }
+                }
+            }
+
+            
+            if let Some(f) = self.overload_visit_value {
+                for v in op.outputs() {
+                    f(self, v);
+                }
+            }
+        }
+    }
+}
+
+pub struct OpRewriter<V> {
+    overloads: HashMap<TypeId, fn(&mut Self, &Op) -> Op>,
+    overload_rewrite_block: Option<fn(&mut Self, &Block) -> Block>,
+    overload_rewrite_value: Option<fn(&mut Self, &Value) -> Value>,
+    pub state: V
+}
+
+impl<V> OpRewriter<V> {
+    pub fn new(state: V) -> Self {
+        OpRewriter {
+            overloads: HashMap::new(),
+            overload_rewrite_block: None,
+            overload_rewrite_value: None,
+            state,
+        }
+    }
+
+    pub fn overload<T: 'static>(&mut self, f: fn(&mut Self, &Op) -> Op) {
+        self.overloads.insert(TypeId::of::<T>(), f);
+    }
+
+    pub fn overload_rewrite_block(&mut self, f: fn(&mut Self, &Block) -> Block) {
+        self.overload_rewrite_block = Some(f);
+    }
+
+    pub fn overload_write_value(&mut self, f: fn(&mut Self, &Value) -> Value) {
+        self.overload_rewrite_value = Some(f);
+    }
+
+    pub fn rewrite(&mut self, op: &Op) -> Op {
+        if let Some(overload) = self.overloads.get(&op.internal_as_any().type_id()) {
+            overload(self, op)
+        } else {
+            if self.overload_rewrite_value.is_some() || self.overload_rewrite_block.is_some() {
+                let mut new_op = op.op.clone();
+                if let Some(f) = self.overload_rewrite_value {
+                    for v in new_op.inputs_mut() {
+                        *v = f(self, v);
+                    }
+                }
+                if let Some(f) = self.overload_rewrite_block {
+                    for b in new_op.blocks_mut() {
+                        *b = f(self, b);
+                    }
+                }
+                if let Some(f) = self.overload_rewrite_value {
+                    for v in new_op.outputs_mut() {
+                        *v = f(self, v);
+                    }
+                }
+                Op::new(new_op, op.location().clone())
+            } else {
+                op.clone()
+            }
+        }
+    }
+
+}
+
+
+
+#[derive(Debug, Clone)]
 pub enum OpEnum { // could be a trait, once we have a better idea of the functions
     ProgramID(ProgramIDOp),
 
@@ -321,14 +523,175 @@ pub enum OpEnum { // could be a trait, once we have a better idea of the functio
     Assign(AssignOp),
 }
 
-#[derive(Debug)]
+
+impl OpEnum {
+    pub fn inputs(&self) -> Vec<&Value> {
+        match &self {
+            Self::ProgramID(op) => {vec![&op.output]},
+            Self::Load(op) => {
+                let mut inputs = vec![&op.ptr];
+                if let Some(mask) = &op.mask {
+                    inputs.push(mask);
+                }
+                if let Some(value) = &op.value {
+                    inputs.push(value);
+                }
+                inputs
+            }
+            Self::Store(op) => {
+                let mut inputs = vec![&op.ptr, &op.value];
+                if let Some(mask) = &op.mask {
+                    inputs.push(mask);
+                }
+                inputs
+            }
+            Self::Reshape(op) => vec![&op.input],
+            Self::Permute(op) => vec![&op.input],
+            Self::Slice(op) => vec![&op.input],
+            Self::Expand(op) => vec![&op.input],
+            Self::Broadcast(op) => vec![&op.input, &op.other],
+            Self::Reduce(op) => vec![&op.input],
+            Self::ElementWise(op) => op.args.iter().collect(),
+            Self::Dot(op) => vec![&op.a, &op.b],
+            Self::Full(op) => vec![],
+            Self::Arange(op) => vec![],
+            Self::For(op) => vec![&op.start, &op.end, &op.step],
+            Self::If(op) => vec![&op.cond],
+            Self::FunctionOp(op) => vec![],
+            Self::Assign(op) => vec![&op.lhs, &op.rhs],
+        }
+    }
+
+    pub fn inputs_mut(&mut self) -> Vec<&mut Value> {
+        match self {
+            Self::ProgramID(op) => {vec![&mut op.output]},
+            Self::Load(op) => {
+                let mut inputs = vec![&mut op.ptr];
+                if let Some(mask) = &mut op.mask {
+                    inputs.push(mask);
+                }
+                if let Some(value) = &mut op.value {
+                    inputs.push(value);
+                }
+                inputs
+            }
+            Self::Store(op) => {
+                let mut inputs = vec![&mut op.ptr, &mut op.value];
+                if let Some(mask) = &mut op.mask {
+                    inputs.push(mask);
+                }
+                inputs
+            }
+            Self::Reshape(op) => vec![&mut op.input],
+            Self::Permute(op) => vec![&mut op.input],
+            Self::Slice(op) => vec![&mut op.input],
+            Self::Expand(op) => vec![&mut op.input],
+            Self::Broadcast(op) => vec![&mut op.input, &mut op.other],
+            Self::Reduce(op) => vec![&mut op.input],
+            Self::ElementWise(op) => op.args.iter_mut().collect(),
+            Self::Dot(op) => vec![&mut op.a, &mut op.b],
+            Self::Full(op) => vec![],
+            Self::Arange(op) => vec![],
+            Self::For(op) => vec![&mut op.start, &mut op.end, &mut op.step],
+            Self::If(op) => vec![&mut op.cond],
+            Self::FunctionOp(op) => vec![],
+            Self::Assign(op) => vec![&mut op.lhs, &mut op.rhs],
+        }
+    }
+
+    pub fn outputs(&self) -> Vec<&Value> {
+        match &self {
+            Self::ProgramID(op) => {vec![&op.output]},
+            Self::Load(op) => vec![&op.output],
+            Self::Store(op) => vec![],
+            Self::Reshape(op) => vec![&op.output],
+            Self::Permute(op) => vec![&op.output],
+            Self::Slice(op) => vec![&op.output],
+            Self::Expand(op) => vec![&op.output],
+            Self::Broadcast(op) => vec![&op.output],
+            Self::Reduce(op) => vec![&op.output],
+            Self::ElementWise(op) => vec![&op.output],
+            Self::Dot(op) => vec![&op.output],
+            Self::Full(op) => vec![&op.output],
+            Self::Arange(op) => vec![&op.output],
+            Self::For(op) => vec![],
+            Self::If(op) => vec![],
+            Self::FunctionOp(op) => vec![],
+            Self::Assign(op) => vec![],
+        }
+    }
+
+    pub fn outputs_mut(&mut self) -> Vec<&mut Value> {
+        match self {
+            Self::ProgramID(op) => {vec![&mut op.output]},
+            Self::Load(op) => vec![&mut op.output],
+            Self::Store(op) => vec![],
+            Self::Reshape(op) => vec![&mut op.output],
+            Self::Permute(op) => vec![&mut op.output],
+            Self::Slice(op) => vec![&mut op.output],
+            Self::Expand(op) => vec![&mut op.output],
+            Self::Broadcast(op) => vec![&mut op.output],
+            Self::Reduce(op) => vec![&mut op.output],
+            Self::ElementWise(op) => vec![&mut op.output],
+            Self::Dot(op) => vec![&mut op.output],
+            Self::Full(op) => vec![&mut op.output],
+            Self::Arange(op) => vec![&mut op.output],
+            Self::For(op) => vec![],
+            Self::If(op) => vec![],
+            Self::FunctionOp(op) => vec![],
+            Self::Assign(op) => vec![],
+        }
+    }
+
+    pub fn blocks(&self) -> Vec<&Block> {
+        match &self {
+            Self::If(op) => {vec![&op.then, &op.else_]},
+            Self::For(op) => {vec![&op.body]},
+            Self::FunctionOp(op) => {vec![&op.body]},
+            _ => vec![],
+        }
+    }
+
+    pub fn blocks_mut(&mut self) -> Vec<&mut Block> {
+        match self {
+            Self::If(op) => {vec![&mut op.then, &mut op.else_]},
+            Self::For(op) => {vec![&mut op.body]},
+            Self::FunctionOp(op) => {vec![&mut op.body]},
+            _ => vec![],
+        }
+    }
+
+    pub fn internal_as_any(&self) -> &dyn std::any::Any {
+        match self {
+            Self::ProgramID(x) => x,
+            Self::Load(x) => x,
+            Self::Store(x) => x,
+            Self::Reshape(x) => x,
+            Self::Permute(x) => x,
+            Self::Slice(x) => x,
+            Self::Expand(x) => x,
+            Self::Broadcast(x) => x,
+            Self::Reduce(x) => x,
+            Self::ElementWise(x) => x,
+            Self::Dot(x) => x,
+            Self::Full(x) => x,
+            Self::Arange(x) => x,
+            Self::For(x) => x,
+            Self::If(x) => x,
+            Self::FunctionOp(x) => x,
+            Self::Assign(x) => x,
+        }
+    }
+}
+
+#[derive(Debug, Clone)]
 pub struct AssignOp {
     pub lhs: Value,
     pub rhs: Value,
 }
 
 
-#[derive(Debug)]
+#[derive(Debug, Clone)]
 pub struct ForOp {
     pub induction_var: Value,
     pub start: Value,
@@ -337,20 +700,20 @@ pub struct ForOp {
     pub body: Block,
 }
 
-#[derive(Debug)]
+#[derive(Debug, Clone)]
 pub struct IfOp {
     pub cond: Value,
     pub then: Block,
     pub else_: Block,
 }
 
-#[derive(Debug)]
+#[derive(Debug, Clone)]
 pub struct FunctionOp {
     pub name: String,
     pub body: Block
 }
 
-#[derive(Debug)]
+#[derive(Debug, Clone)]
 pub struct ProgramIDOp {
     pub output: Value,
 }
@@ -364,7 +727,7 @@ impl ProgramIDOp {
     
 }
 
-#[derive(Debug)]
+#[derive(Debug, Clone)]
 pub struct LoadOp {
     pub ptr: Value,
     pub mask: Option<Value>,
@@ -384,7 +747,7 @@ impl LoadOp {
     }
 }
 
-#[derive(Debug)]
+#[derive(Debug, Clone)]
 pub struct StoreOp {
     pub ptr: Value,
     pub value: Value,
@@ -402,7 +765,7 @@ impl StoreOp {
 
 }
 
-#[derive(Debug)]
+#[derive(Debug, Clone)]
 pub struct ReshapeOp {
     pub input: Value,
     pub shape: Vec<usize>,
@@ -455,7 +818,7 @@ impl ReshapeOp {
     }
 }
 
-#[derive(Debug)]
+#[derive(Debug, Clone)]
 pub struct PermuteOp {
     input: Value,
     permutation: Vec<usize>,
@@ -490,7 +853,7 @@ impl PermuteOp {
     }
 }
 
-#[derive(Debug)]
+#[derive(Debug, Clone)]
 pub struct SliceOp {
     input: Value,
     slices: Vec<Range<usize>>,
@@ -549,7 +912,7 @@ impl SliceOp {
     }
 }
 
-#[derive(Debug)]
+#[derive(Debug, Clone)]
 pub struct ExpandOp {
     input: Value,
     dim: usize,
@@ -580,7 +943,7 @@ impl ExpandOp {
     }
 }
 
-#[derive(Debug)]
+#[derive(Debug, Clone)]
 pub struct BroadcastOp {
     input: Value,
     other: Value,
@@ -627,7 +990,7 @@ impl BroadcastOp {
     }
 }
 
-#[derive(Debug)]
+#[derive(Debug, Clone)]
 pub struct ReduceOp {
     input: Value,
     dim: usize,
@@ -668,7 +1031,7 @@ impl ReduceOp {
     }
 }
 
-#[derive(Debug)]
+#[derive(Debug, Clone)]
 pub struct DotOp {
     a: Value,
     b: Value,
@@ -703,20 +1066,20 @@ impl DotOp {
     }
 }
 
-#[derive(Debug)]
+#[derive(Debug, Clone)]
 pub struct ElementWiseOp {
     pub name: ElementwiseFnOption,
     pub args: Vec<Value>,
     pub output: Value,
 }
 
-#[derive(Debug)]
+#[derive(Debug, Clone)]
 pub enum ElementwiseFnOption {
     Intrinsic(IntrinsicElementwise),
     Extern(String, ElType),
 }
 
-#[derive(Debug)]
+#[derive(Debug, Clone)]
 pub enum IntrinsicElementwise {
     Add, Sub, Mul, Div, Neg, Rem,
     Pow, Exp, Log, Sqrt,
@@ -938,7 +1301,7 @@ impl ElementWiseOp {
     
 }
 
-#[derive(Debug)]
+#[derive(Debug, Clone)]
 pub struct FullOp {
     const_value: Constant,
     output: Value,
@@ -956,7 +1319,7 @@ impl FullOp {
     }
 }
 
-#[derive(Debug)]
+#[derive(Debug, Clone)]
 pub struct ArangeOp {
     begin: i32,
     end: i32,
@@ -981,7 +1344,7 @@ impl ArangeOp {
 }
 
 
-#[derive(Debug)]
+#[derive(Debug, Clone)]
 pub enum ReduceOpOption {
     Sum,
     Prod,
@@ -992,1030 +1355,6 @@ pub enum ReduceOpOption {
     Xor,
 }
 
-
-
-#[derive(Clone, Debug)]
-pub struct Value(Rc<ValueImpl>);
-
-#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
-pub struct ValueId(usize);
-
-impl Value {
-    fn new(type_of: Type) -> Self {
-        Value(Rc::new(ValueImpl {
-            type_of,
-            name_hint: RefCell::new(None),
-        }))
-    }
-
-    pub fn type_of(&self) -> &Type {
-        &self.0.type_of
-    }
-
-    pub fn name_hint(self, name: impl Into<String>) -> Self {
-        self.0.name_hint.replace(Some(name.into()));
-        self
-    }
-
-    pub fn name(&self) -> Option<String> {
-        self.0.name_hint.borrow().clone()
-    }
-
-    pub fn id(&self) -> usize {
-        Rc::as_ptr(&self.0) as usize
-    }
-}
-
-impl PartialEq for Value {
-    fn eq(&self, other: &Self) -> bool {
-        Rc::ptr_eq(&self.0, &other.0)
-    }
-}
-impl Eq for Value {}
-
-impl Hash for Value {
-    fn hash<H: Hasher>(&self, state: &mut H) {
-        Rc::as_ptr(&self.0).hash(state)
-    }
-}
-
-#[derive(Debug)]
-struct ValueImpl {
-    type_of: Type,
-    name_hint: RefCell<Option<String>>,
-}
-
-#[derive(Debug)]
-pub struct Function {
-    name: String,
-    args: Vec<Value>,
-    returns: Vec<Type>,
-    body: Vec<AST>,
-}
-
-pub struct FunctionBuilder {
-    name: String,
-    args: Vec<Value>,
-    scope: Vec<Vec<AST>>,
-}
-
-macro_rules! binary_builder {
-    ($fn_name:ident, $enum_name:ident) => {
-        pub fn $fn_name(&mut self, a: &Value, b: &Value) -> Result<Value> {
-            let loc = std::panic::Location::caller().into();
-            let openum = OpEnum::ElementWise(ElementWiseOp::build(
-                ElementwiseFnOption::Intrinsic(IntrinsicElementwise::$enum_name),
-                &[a.clone(), b.clone()],
-            )?);
-            let val = openum.outputs().pop().unwrap().clone();
-            let op = AST::Op(openum, loc);
-            self.push_node(op)?;
-            Ok(val)
-        }
-    };
-}
-
-macro_rules! unary_builder {
-    ($fn_name:ident, $enum_name:ident) => {
-        pub fn $fn_name(&mut self, a: &Value) -> Result<Value> {
-            let loc = std::panic::Location::caller().into();
-            let openum = OpEnum::ElementWise(ElementWiseOp::build(
-                ElementwiseFnOption::Intrinsic(IntrinsicElementwise::$enum_name),
-                &[a.clone()],
-            )?);
-            let val = openum.outputs().pop().unwrap().clone();
-            let op = AST::Op(openum, loc);
-            self.push_node(op)?;
-            Ok(val)
-        }
-    };
-}
-
-impl FunctionBuilder {
-    binary_builder!(add, Add);
-    binary_builder!(sub, Sub);
-    binary_builder!(mul, Mul);
-    binary_builder!(div, Div);
-    binary_builder!(rem, Rem);
-    binary_builder!(pow, Pow);
-    binary_builder!(eq, Eq);
-    binary_builder!(ne, Ne);
-    binary_builder!(lt, Lt);
-    binary_builder!(gt, Gt);
-    binary_builder!(le, Le);
-    binary_builder!(ge, Ge);
-    binary_builder!(and, And);
-    binary_builder!(or, Or);
-    binary_builder!(logical_and, LogicalAnd);
-    binary_builder!(logical_or, LogicalOr);
-    binary_builder!(xor, Xor);
-    binary_builder!(shr, Shr);
-    binary_builder!(shl, Shl);
-    binary_builder!(max, Max);
-    binary_builder!(min, Min);
-
-    unary_builder!(neg, Neg);
-    unary_builder!(not, Not);
-    unary_builder!(exp, Exp);
-    unary_builder!(log, Log);
-    unary_builder!(sqrt, Sqrt);
-    unary_builder!(ceil, Ceil);
-    unary_builder!(floor, Floor);
-    unary_builder!(round, Round);
-
-    pub fn where_(&mut self, cond: &Value, a: &Value, b: &Value) -> Result<Value> {
-        let loc = std::panic::Location::caller().into();
-        let openum = OpEnum::ElementWise(ElementWiseOp::build(
-            ElementwiseFnOption::Intrinsic(IntrinsicElementwise::Where),
-            &[cond.clone(), a.clone(), b.clone()],
-        )?);
-        let val = openum.outputs().pop().unwrap().clone();
-        let op = AST::Op(openum, loc);
-        self.push_node(op)?;
-        Ok(val)
-    }
-
-    pub fn new(name: impl Into<String>) -> Self {
-        FunctionBuilder {
-            name: name.into(),
-            args: vec![],
-            scope: vec![vec![]],
-        }
-    }
-
-    pub fn arg<const N: usize>(&mut self, args: [Type; N]) -> [Value; N] {
-        let values: [Value; N] = args.map(|ty| Value::new(ty.clone()));
-        for i in &values {
-            self.args.push(i.clone());
-        }
-        values
-    }
-
-    fn push_node(&mut self, op: AST) -> Result<()> {
-        self.scope.last_mut().ok_or(Error::msg("scope is empty"))?.push(op);
-        Ok(())
-    }
-
-    pub fn program_id(&mut self) -> Result<Value> {
-        let loc = std::panic::Location::caller().into();
-        let openum = OpEnum::ProgramID(ProgramIDOp::build());
-        let val = openum.outputs().pop().unwrap().clone();
-        let op = AST::Op(openum, loc);
-        self.push_node(op)?;
-        Ok(val)
-    }
-
-    pub fn load(
-        &mut self,
-        ptr: &Value,
-        mask: Option<&Value>,
-        value: Option<&Value>,
-    ) -> Result<Value> {
-        let loc = std::panic::Location::caller().into();
-        let openum = OpEnum::Load(LoadOp::build(ptr, mask, value)?);        
-        let val = openum.outputs().pop().unwrap().clone();
-        let op = AST::Op(
-            openum,
-            loc,
-        );
-        self.push_node(op)?;
-        Ok(val)
-    }
-
-    pub fn store(&mut self, ptr: &Value, value: &Value, mask: Option<&Value>) -> Result<()> {
-        let loc = std::panic::Location::caller().into();
-        let openum = OpEnum::Store(StoreOp::build(ptr, value, mask)?);
-        let op = AST::Op(openum, loc);
-        self.push_node(op)?;
-        Ok(())
-    }
-
-    pub fn reshape(&mut self, input: &Value, shape: &[i32]) -> Result<Value> {
-        let loc = std::panic::Location::caller().into();
-        let openum = OpEnum::Reshape(ReshapeOp::build(input, shape)?);
-        let val = openum.outputs().pop().unwrap().clone();
-        let op = AST::Op(openum, loc);
-        self.push_node(op)?;
-        Ok(val)
-    }
-
-    pub fn permute(&mut self, input: &Value, permutation: &[u32]) -> Result<Value> {
-        let loc = std::panic::Location::caller().into();
-        let openum = OpEnum::Permute(PermuteOp::build(input, permutation)?);
-        let val = openum.outputs().pop().unwrap().clone();
-        let op = AST::Op(openum, loc);
-        self.push_node(op)?;
-        Ok(val)
-    }
-
-    /// Range: a..b
-    /// RangeTo: 0..b
-    /// RangeFrom: a..-1
-    /// RangeFull: 0..-1
-    /// Index and remove dim: a..a
-    pub fn slice(&mut self, input: &Value, slices: &[Range<i32>]) -> Result<Value> {
-        let loc = std::panic::Location::caller().into();
-        let openum = OpEnum::Slice(SliceOp::build(input, slices)?);
-        let val = openum.outputs().pop().unwrap().clone();
-        let op = AST::Op(openum, loc);
-        self.push_node(op)?;
-        Ok(val)
-    }
-
-    pub fn expand(&mut self, input: &Value, dims: i32) -> Result<Value> {
-        let loc = std::panic::Location::caller().into();
-        let openum = OpEnum::Expand(ExpandOp::build(input, dims)?);
-        let val = openum.outputs().pop().unwrap().clone();
-        let op = AST::Op(openum, loc);
-        self.push_node(op)?;
-        Ok(val)
-    }
-
-    pub fn broadcast(&mut self, input: &Value, other: &Value) -> Result<Value> {
-        let loc = std::panic::Location::caller().into();
-        let openum = OpEnum::Broadcast(BroadcastOp::build(input, other)?);
-        let val = openum.outputs().pop().unwrap().clone();
-        let op = AST::Op(openum, loc);
-        self.push_node(op)?;
-        Ok(val)
-    }
-
-    pub fn reduce(&mut self, input: &Value, dim: i32, op: ReduceOpOption) -> Result<Value> {
-        let loc = std::panic::Location::caller().into();
-        let openum = OpEnum::Reduce(ReduceOp::build(input, dim, op)?);
-        let val = openum.outputs().pop().unwrap().clone();
-        let op = AST::Op(openum, loc);
-        self.push_node(op)?;
-        Ok(val)
-    }
-
-    pub fn dot(&mut self, a: &Value, b: &Value) -> Result<Value> {
-        let loc = std::panic::Location::caller().into();
-        let openum = OpEnum::Dot(DotOp::build(a, b)?);
-        let val = openum.outputs().pop().unwrap().clone();
-        let op = AST::Op(openum, loc);
-        self.push_node(op)?;
-        Ok(val)
-    }
-
-    pub fn arange(&mut self, begin: i32, end: i32) -> Result<Value> {
-        let loc = std::panic::Location::caller().into();
-        let openum = OpEnum::Arange(ArangeOp::build(begin, end)?);
-        let val = openum.outputs().pop().unwrap().clone();
-        let op = AST::Op(openum, loc);
-        self.push_node(op)?;
-        Ok(val)
-    }
-
-    pub fn full(&mut self, value: impl Into<Constant>, shape: &[usize]) -> Result<Value> {
-        let loc = std::panic::Location::caller().into();
-        let openum = OpEnum::Full(FullOp::build(value, shape));
-        let val = openum.outputs().pop().unwrap().clone();
-        let op = AST::Op(openum, loc);
-        self.push_node(op)?;
-        Ok(val)
-    }
-
-    pub fn for_(
-        &mut self,
-        begin: &Value,
-        end: &Value,
-        step: &Value,
-        scope: impl Fn(&mut Self, &Value) -> Result<()>,
-    ) -> Result<()> {
-        let loc = std::panic::Location::caller().into();
-        let induction_var = Value::new(Type::scalar(ElType::Val(Dtype::I32)));
-        self.scope.push(vec![]);
-        scope(self, &induction_var)?;
-        let for_scope = self.scope.pop().unwrap();
-        let op = AST::Stmt(
-            Stmt::For(
-                induction_var.clone(),
-                begin.clone(),
-                end.clone(),
-                step.clone(),
-                for_scope,
-            ),
-            loc,
-        );
-        self.scope.last_mut().unwrap().push(op);
-        Ok(())
-    }
-
-    pub fn while_(&mut self, cond: impl FnOnce(&mut Self) -> Result<Value>, body: impl FnOnce(&mut Self) -> Result<()>) -> Result<()> {
-        let loc = std::panic::Location::caller().into();
-        self.scope.push(vec![]);
-        let cond = cond(self)?;
-        let cond_block = self.scope.pop().unwrap();
-        self.scope.push(vec![]);
-        body(self)?;
-        let while_block = self.scope.pop().unwrap();
-        let op = AST::Stmt(Stmt::While(cond_block, cond.clone(), while_block), loc);
-        self.scope.last_mut().unwrap().push(op);
-        Ok(())
-    }
-
-    pub fn return_(&mut self, values: &[Value]) -> Result<()> {
-        let loc = std::panic::Location::caller().into();
-        let op = AST::Stmt(Stmt::Return(values.into()), loc);
-        self.scope.last_mut().unwrap().push(op);
-        Ok(())
-    }
-
-    pub fn if_(
-        &mut self,
-        cond: &Value,
-        then: impl FnOnce(&mut Self) -> Result<()>,
-        else_: impl FnOnce(&mut Self) -> Result<()>,
-    ) -> Result<()> {
-        let loc = std::panic::Location::caller().into();
-        self.scope.push(vec![]);
-        then(self)?;
-        let then_scope = self.scope.pop().unwrap();
-        self.scope.push(vec![]);
-        else_(self)?;
-        let else_scope = self.scope.pop().unwrap();
-        let op = AST::Stmt(Stmt::If(cond.clone(), then_scope, else_scope), loc);
-        self.scope.last_mut().unwrap().push(op);
-        Ok(())
-    }
-
-    pub fn break_(&mut self) -> Result<()> {
-        let loc = std::panic::Location::caller().into();
-        let op = AST::Stmt(Stmt::Break, loc);
-        self.scope.last_mut().unwrap().push(op);
-        Ok(())
-    }
-
-    pub fn assign(&mut self, lhs: &Value, rhs: &Value) -> Result<()> {
-        let loc = std::panic::Location::caller().into();
-        let op = AST::Stmt(Stmt::Assign(lhs.clone(), rhs.clone()), loc);
-        self.scope.last_mut().unwrap().push(op);
-        Ok(())
-    }
-
-    pub fn extern_elementwise(&mut self, args: &[Value], op_code: &str, return_type: ElType) -> Result<Value> {
-        let loc = std::panic::Location::caller().into();
-        let openum = OpEnum::ElementWise(ElementWiseOp::build(ElementwiseFnOption::Extern(op_code.into(), return_type), args)?);
-        let val = openum.outputs().pop().unwrap().clone();
-        let op = AST::Op(openum, loc);
-        self.push_node(op)?;
-        Ok(val)
-    }
-
-    pub fn visit_terminals(ast: &AST, f: &mut impl FnMut(&AST)) { 
-        // if not &mut then f will raise a recursion error in memorization
-        // as inner recursive functions needs to be &mut f
-        match ast {
-            AST::Op(_, _) => f(ast),
-            AST::Stmt(stmt, _) => match stmt {
-                Stmt::For(_, _, _, _, body) => {
-                    for ast in body {
-                        FunctionBuilder::visit_terminals(ast, f);
-                    }
-                }
-                Stmt::While(cond_block, _, body) => {
-                    for ast in body {
-                        FunctionBuilder::visit_terminals(ast, f);
-                    }
-                    for ast in cond_block {
-                        FunctionBuilder::visit_terminals(ast, f);
-                    }
-                }
-                Stmt::If(_, then, else_) => {
-                    for ast in then {
-                        FunctionBuilder::visit_terminals(ast, f);
-                    }
-                    for ast in else_ {
-                        FunctionBuilder::visit_terminals(ast, f);
-                    }
-                }
-                Stmt::Assign(_, _) => f(ast),
-                Stmt::Return(_) => f(ast),
-                Stmt::Break => f(ast),
-                Stmt::Continue => f(ast),
-                Stmt::Function(func) => {
-                    for ast in &func.body {
-                        FunctionBuilder::visit_terminals(ast, f);
-                    }
-                },
-            },
-        }
-    }
-
-    fn verify_function_return(body: &Vec<AST>) -> Result<Vec<Type>> {
-        let mut returns = Ok(vec![]);
-        let mut seen = false;
-        for node in body {
-            Self::visit_terminals(node, &mut |node| {
-                if let AST::Stmt(Stmt::Return(values), _) = node {
-                    if !seen && returns.is_ok() {
-                        let types = values.iter().map(|x| x.type_of().clone()).collect();
-                        returns = Ok(types);
-                        seen = true;
-                    } else if seen && returns.is_ok() {
-                        let types: Vec<_> = values.iter().map(|x| x.type_of().clone()).collect();
-                        if returns.as_ref().unwrap() != &types {
-                            returns = Err(Error::msg(format!(
-                                "Return types mismatch, got {:?} and {:?}",
-                                returns.as_ref().unwrap(),
-                                types
-                            )));
-                        }
-                    }
-                }
-            });
-        }
-        returns
-    }
-
-    pub fn build(mut self) -> Result<Function> {
-        if self.scope.len() != 1 {
-            return Err(Error::msg("Internal error, scope should only have one element"));
-        }
-        
-        Ok(Function {
-            name: self.name,
-            args: self.args,
-            returns: Self::verify_function_return(self.scope.last().unwrap())?,
-            body: self.scope.pop().unwrap(),
-        })
-    }
-
-    pub fn build_body(mut self) -> Result<Vec<AST>> {
-        if self.scope.len() != 1 {
-            return Err(Error::msg("Internal error, scope should only have one element"));
-        }
-        Ok(self.scope.pop().unwrap())
-    }
-
-    pub fn insert_block(&mut self, body: Vec<AST>) {
-        self.scope.last_mut().unwrap().extend(body);
-    }
-
-    pub fn insert_node(&mut self, node: AST) {
-        self.scope.last_mut().unwrap().push(node);
-    }
-
-    pub fn pop_node(&mut self) -> Option<AST> {
-        self.scope.last_mut().unwrap().pop()
-    }
-
-    pub fn set_last_loc(&mut self, loc: Location) {
-        if let Some(node) = self.scope.last_mut().unwrap().last_mut() {
-            match node {
-                AST::Op(_, loc_) => *loc_ = loc,
-                AST::Stmt(_, loc_) => *loc_ = loc,
-            }
-        }
-    }
-}
-
-fn replace_all_uses_with(nodes: &mut [AST], from: &Value, to: &Value) {
-    for node in nodes {
-        match node {
-            AST::Op(op, _) => {
-                for input in op.inputs_mut() {
-                    if input == from {
-                        *input = to.clone();
-                    }
-                }
-            }
-            AST::Stmt(stmt, _) => {
-                match stmt {
-                    Stmt::For(a, b, c, d, body) => {
-                        for node in [a, b, c, d] {
-                            if node == from {
-                                *node = to.clone();
-                            }
-                        }
-                        replace_all_uses_with(body, from, to);
-                    }
-                    Stmt::While(cond_block, cond, body) => {
-                        if cond == from {
-                            *cond = to.clone();
-                        }
-                        replace_all_uses_with(cond_block, from, to);
-                        replace_all_uses_with(body, from, to);
-                    }
-                    Stmt::If(cond, then, else_) => {
-                        if cond == from {
-                            *cond = to.clone();
-                        }
-                        replace_all_uses_with(then, from, to);
-                        replace_all_uses_with(else_, from, to);
-                    }
-                    Stmt::Assign(lhs, rhs) => {
-                        if lhs == from {
-                            *lhs = to.clone();
-                        }
-                        if rhs == from {
-                            *rhs = to.clone();
-                        }
-                    }
-                    Stmt::Return(values) => {
-                        for value in values {
-                            if value == from {
-                                *value = to.clone();
-                            }
-                        }
-                    }
-                    Stmt::Break => {}
-                    Stmt::Continue => {}
-                    Stmt::Function(func) => {
-                        replace_all_uses_with(&mut func.body, from, to);
-                    }
-                }
-            }
-        }
-    }
-}
-
-
-fn remove_predicated_break_continue(
-    stmt: &mut Stmt,
-    break_cond_var: &Value, 
-    continue_cond_var: &Value
-) -> (bool, bool) { // (has_break, has_continue)
-
-    let mut has_break = false;
-    let mut has_continue = false;
-    match stmt {
-        Stmt::If(cond, then, else_) => {
-            let mut i = 0;
-            while i < then.len() {
-                if let Some(Stmt::Break) = then[i].get_stmt_ref() {
-                    then[i] = AST::Stmt(Stmt::Assign(break_cond_var.clone(), cond.clone()), then[i].loc().clone());
-                    has_break = true;
-                    break;
-                } else if let Some(Stmt::Continue) = then[i].get_stmt_ref() {
-                    then[i] = AST::Stmt(Stmt::Assign(continue_cond_var.clone(), cond.clone()), then[i].loc().clone());
-                    has_continue = true;
-                    break;
-                }
-                i += 1;
-            }
-            then.truncate(i + 1);
-            let (has_break_, has_continue_) = hoist_break_continue(then, Some(break_cond_var), Some(continue_cond_var));
-            has_break |= has_break_;
-            has_continue |= has_continue_;
-
-            i = 0;
-            while i < else_.len() {
-                let loc = else_[i].loc();
-                if let Some(Stmt::Break) = else_[i].get_stmt_ref() {
-                    let mut builder = FunctionBuilder::new("break");
-                    let not_val = builder.not(cond).unwrap();
-                    builder.set_last_loc(loc.clone());
-                    builder.assign(break_cond_var, &not_val).unwrap();
-                    builder.set_last_loc(loc.clone());
-                    else_.splice(i..i+1, builder.build_body().unwrap());
-                    has_break = true;
-                    break;
-                } else if let Some(Stmt::Continue) = else_[i].get_stmt_ref() {
-                    let mut builder = FunctionBuilder::new("break");
-                    let not_val = builder.not(cond).unwrap();
-                    builder.set_last_loc(loc.clone());
-                    builder.assign(continue_cond_var, &not_val).unwrap();
-                    builder.set_last_loc(loc.clone());
-                    else_.splice(i..i+1, builder.build_body().unwrap());
-                    has_continue = true;
-                    break;
-                }
-                i += 1;
-            }
-
-            else_.truncate(i + 1);
-            let (has_break_, has_continue_) = hoist_break_continue(then, Some(break_cond_var), Some(continue_cond_var));
-            has_break |= has_break_;
-            has_continue |= has_continue_;
-        }
-        _ => {}
-    }
-    (has_break, has_continue)
-}
-
-fn protect_block_break_continue(
-    nodes: &mut Vec<AST>,
-    break_cond_var: &Value,
-    continue_cond_var: &Value,
-) -> (bool, bool) { // (has_break, has_continue)
-    let mut has_break = false;
-    let mut has_continue = false;
-    let mut i = 0;
-    while i < nodes.len() {
-        let loc = nodes[i].loc().clone();
-        if let Some(stmt) = nodes[i].get_stmt_mut() {
-            if let Stmt::If(_, _, _) = stmt {
-                let (has_break_, has_continue_) = remove_predicated_break_continue(stmt, break_cond_var, continue_cond_var);
-                has_break |= has_break_;
-                has_continue |= has_continue_;
-            } else if let Stmt::Break = stmt {
-                let const_true = OpEnum::Full(FullOp::build(true, &[]));
-                let const_true_val = const_true.outputs()[0].clone();
-                nodes.insert(i, AST::Op(const_true, loc.clone()));
-                nodes[i + 1] = AST::Stmt(Stmt::Assign(break_cond_var.clone(), const_true_val), loc.clone()); 
-                i += 1;
-                has_break = true;
-            } else if let Stmt::Continue = stmt {
-                let const_true = OpEnum::Full(FullOp::build(true, &[]));
-                let const_true_val = const_true.outputs()[0].clone();
-                nodes.insert(i, AST::Op(const_true, loc.clone()));
-                nodes[i + 1] = AST::Stmt(Stmt::Assign(continue_cond_var.clone(), const_true_val), loc.clone()); 
-                i += 1;
-                has_continue = true;
-            }
-        }
-
-        if has_break || has_continue {
-            let mut builder = FunctionBuilder::new("break");
-            let mut rest_body: Vec<_> = nodes.drain(i..).collect();
-            let (has_break_, has_continue_) = hoist_break_continue(&mut rest_body, Some(break_cond_var), Some(continue_cond_var));
-            has_break |= has_break_;
-            has_continue |= has_continue_;
-            
-            let has_break_or_continue = builder.or(break_cond_var, continue_cond_var).unwrap();
-            builder.set_last_loc(loc.clone());
-            let no_break_or_continue = builder.not(&has_break_or_continue).unwrap();
-            builder.set_last_loc(loc.clone());
-
-            builder.if_(&no_break_or_continue, |b| {
-                for node in rest_body {
-                    b.insert_node(node);
-                }
-                Ok(())
-            }, |_| {Ok(())}).unwrap();
-            builder.set_last_loc(loc.clone());
-
-            nodes.extend(builder.build_body().unwrap());
-            break;
-        }
-        i += 1;
-    }
-    (has_break, has_continue)
-
-}
-
-fn hoist_break_continue(
-    nodes: &mut Vec<AST>, 
-    break_var: Option<&Value>,
-    continue_var: Option<&Value>,
-) -> (bool, bool) { // (has_break, has_continue)
-    let mut has_break = false;
-    let mut has_continue = false;
-    let mut i = 0;
-    while i < nodes.len() {
-        match &mut nodes[i] {
-            AST::Op(_, _) => {},
-            AST::Stmt(stmt, _) => {
-                match stmt {
-                    Stmt::For(ind_var, start, end, step, body) => {
-                        let mut builder = FunctionBuilder::new("hoist_break_continue");
-                        let break_cond_var = builder.full(false, &[]).unwrap();
-                        let continue_cond_var = builder.full(false, &[]).unwrap();
-                        let (inner_break, _inner_continue) = hoist_break_continue(body, Some(&break_cond_var), Some(&continue_cond_var));
-                        if inner_break {
-                            let mut new_body = vec![];
-                            // steal body
-                            std::mem::swap(&mut new_body, body);
-                            let new_ind_var = builder.full(0, &[]).unwrap();
-                            builder.assign(&new_ind_var, start).unwrap();
-                            replace_all_uses_with(&mut new_body, &ind_var, &new_ind_var);
-                            // let ind_cond = builder.elementwise(&[new_ind_var.clone(), end.clone()], "lt").unwrap();
-                            // let cond_var = builder.elementwise(&[ind_cond, break_cond_var.clone()], "and").unwrap();
-                            // let cond_var = builder.elementwise(&[cond_var, continue_cond_var.clone()], "and").unwrap();
-                            // builder.while_(&cond_var, |builder| {
-                            //     for node in new_body {
-                            //         builder.insert_node(node);
-                            //     }
-                            //     let new_ind_var_ = builder.elementwise(&[new_ind_var.clone(), step.clone()], "add").unwrap();
-                            //     builder.assign(&new_ind_var, &new_ind_var_).unwrap();
-                            //     let ind_cond = builder.elementwise(&[new_ind_var.clone(), end.clone()], "lt").unwrap();
-                            //     let cond_var_ = builder.elementwise(&[ind_cond, break_cond_var], "and").unwrap();
-                            //     let cond_var_ = builder.elementwise(&[cond_var_, continue_cond_var], "and").unwrap();
-                            //     builder.assign(&cond_var, &cond_var_).unwrap();
-                            //     Ok(())
-                            // }).unwrap();
-                        }
-
-
-                    }
-                    _ => {}
-                }            
-            }
-        }
-    }
-    if break_var.is_some() && continue_var.is_some() {
-        let (has_break_, has_continue_) = protect_block_break_continue(nodes, break_var.unwrap(), continue_var.unwrap());
-        has_break |= has_break_;
-        has_continue |= has_continue_;
-    }
-
-    (has_break, has_continue)
-}
-
-fn hoist_break(mut f: Function) -> Result<Function> {
-    for node in f.body.iter_mut() {
-        match node {
-            AST::Op(_, _) => {},
-            AST::Stmt(stmt, _) => {
-                match stmt {
-                    Stmt::For(_, _, _, _, body) => {
-                        for i in 0..body.len() {
-                            if let AST::Stmt(Stmt::Break, _) = body[i] {
-                                body.truncate(i);
-                                break;
-                            }
-                            
-                        }
-
-                    }
-                    _ => {}
-                }
-            }
-        }
-    }
-    todo!()
-}
-
-fn collect_outside_uses(f: &AST, uses: &mut HashSet<Value>, internal: &mut HashSet<Value>) {
-    let mut add_use = |v| {
-            if !internal.contains(v) {
-                uses.insert(v.clone());
-            }
-        };
-    match f {
-        AST::Op(op, _) => {
-            for input in op.inputs() {
-                add_use(input);
-            }
-            for output in op.outputs() {
-                internal.insert(output.clone());
-            }
-        }
-        AST::Stmt(stmt, _) => {
-            match stmt {
-                Stmt::For(ind_var, start, end, step, body) => {
-                    add_use(start);
-                    add_use(end);
-                    add_use(step);
-                    internal.insert(ind_var.clone());
-                    for node in body {
-                        collect_outside_uses(node, uses, internal);
-                    }
-                }
-                Stmt::While(cond, cond_res, body) => {
-                    internal.insert(cond_res.clone());
-                    for node in cond {
-                        collect_outside_uses(node, uses, internal);
-                    }
-                    for node in body {
-                        collect_outside_uses(node, uses, internal);
-                    }
-                }
-                Stmt::If(cond, then, else_) => {
-                    add_use(cond);
-                    for node in then {
-                        collect_outside_uses(node, uses, internal);
-                    }
-                    for node in else_ {
-                        collect_outside_uses(node, uses, internal);
-                    }
-                }
-                Stmt::Assign(lhs, rhs) => {
-                    add_use(lhs);
-                    add_use(rhs);
-                }
-                _ => {}
-            }
-        }
-    }
-}
-
-fn convert_to_operation(mut f: AST, remap: &mut HashMap<Value, Value>) -> Result<Op> {
-    let mut get_remap = |v| {
-        if let Some(v) = remap.get(&v) {
-            v.clone()
-        } else {
-            v
-        }
-    };
-
-    match f {
-        AST::Op(op, loc) => { todo!() },
-        AST::Stmt(stmt, loc) => {
-            match stmt {
-                Stmt::For(ind_var, start, end, step, body) => {
-                    let mut builder = FunctionBuilder::new("for");
-
-                },
-                _ => {}
-                // Stmt::While(_, _, _) => todo!(),
-                // Stmt::If(_, _, _) => todo!(),
-                // Stmt::Assign(_, _) => todo!(),
-                // Stmt::Return(_) => todo!(),
-                // Stmt::Break => todo!(),
-                // Stmt::Continue => todo!(),
-                // Stmt::Function(_) => todo!(),
-            }
-        }
-    }
-
-    todo!()
-}
-
-
-pub struct FlowAnalysis {
-    pub source: HashMap<Value, Op>,
-    pub uses: HashMap<Value, Vec<Op>>,
-    pub parent_block: HashMap<Op, Block>,
-    pub block_parent: HashMap<Block, Op>,
-}
-
-impl FlowAnalysis {
-    fn visit(&mut self, op: &Op, parent_block: Option<&Block>) {
-        for outputs in op.outputs() {
-            self.source.insert(outputs.clone(), op.clone());
-        }
-        for input in op.inputs() {
-            if let Some(o) = self.source.get(input) {
-                self.uses.entry(input.clone()).or_default().push(o.clone());
-            }
-        }
-
-        if let Some(parent_block) = parent_block {
-            self.parent_block.insert(op.clone(), parent_block.clone());
-        }
-
-        for block in op.blocks() {
-            self.block_parent.insert(block.clone(), op.clone());
-            for op in block.body.iter() {
-                self.visit(op, Some(block));
-            }
-        }
-    }
-
-    pub fn new(op: &Op) -> Self {
-        let mut s = Self {
-            source: HashMap::new(),
-            uses: HashMap::new(),
-            parent_block: HashMap::new(),
-            block_parent: HashMap::new(),
-        };
-        s.visit(op, None);
-        s
-    }
-
-    pub fn val_source(&self, val: &Value) -> Option<&Op> {
-        self.source.get(val)
-    }
-
-    pub fn val_uses(&self, val: &Value) -> Option<&Vec<Op>> {
-        self.uses.get(val)
-    }
-}
-
-pub fn collect(op: &Op, f: impl Fn(&Op) -> bool) -> Vec<Op> {
-    let mut ops = vec![];
-    let mut worklist = vec![op];
-    while let Some(op) = worklist.pop() {
-        if f(op) {
-            ops.push(op.clone());
-            worklist.extend(op.blocks().iter().flat_map(|x| x.body.iter()));
-        }
-    }
-    ops
-}
-
-pub struct DCE {
-    pub value_live: HashSet<Value>,
-    pub op_live: HashSet<Op>,
-}
-
-impl DCE {
-
-    pub fn is_live(&self, val: &Value) -> bool {
-        self.value_live.contains(val)
-    }
-
-    pub fn mark_live(&mut self, val: &Value) {
-        self.value_live.insert(val.clone());
-    }
-
-
-    pub fn on_op(&mut self, op: &Op, flow: &FlowAnalysis) {
-        match &op.op {
-            OpEnum::Store(_) => {
-                for i in op.inputs() {
-                    self.mark_live(i);
-                }
-            }
-            OpEnum::If(if_op) => {
-                for i in if_op.yields.iter() {
-                    if self.is_live(i) {
-                        let yarg = &if_op.yield_to_term_arg[i];
-                        self.mark_live(yarg);
-                    }
-                }
-                self.on_block(&if_op.then, flow);
-                self.on_block(&if_op.else_, flow);
-                for i in if_op.then.args.iter().chain(if_op.else_.args.iter()) {
-                    if self.is_live(i) {
-                        let yarg = &if_op.block_arg_to_carry[i];
-                        self.mark_live(yarg);
-                    }
-                }
-                if if_op.carries.iter().any(|x| self.is_live(x)) {
-                    self.mark_live(&if_op.cond);
-                }
-            }
-            OpEnum::Loop(loop_op) => {
-                if let Terminator::LoopYield(loop_term) = &loop_op.body.terminator {
-                    for (i, v) in loop_op.yields.iter().enumerate() {
-                        if self.is_live(v) {
-                            self.mark_live(&loop_term.rest[i]);
-                        }
-                    }
-                    self.on_block(&loop_op.body, flow);
-                    for (i, v) in loop_op.body.args.iter().enumerate() {
-                        if self.is_live(v) {
-                            self.mark_live(&loop_op.uses[i]);
-                        }
-                    }
-                } else {
-                    panic!();
-                }
-            }
-            _ => {
-                if op.outputs().into_iter().any(|x| self.is_live(x)) {
-                    self.op_live.insert(op.clone());
-                    for input in op.inputs() {
-                        self.mark_live(input);
-                    }
-                }
-            }
-        }
-    }
-
-    pub fn on_block(&mut self, block: &Block, flow: &FlowAnalysis) {
-        match &block.terminator {
-            Terminator::LoopYield(LoopYield { continue_cond, rest }) => {
-                self.mark_live(continue_cond);
-                loop {
-                    let yield_live = rest.iter().map(|x| self.is_live(x));
-                    let arg_live = block.args.iter().map(|x| self.is_live(x));
-                    let changed = yield_live.zip(arg_live).any(|(x, y)| x != y);
-                    if !changed {
-                        break;
-                    }
-                    
-                    for op in block.body.iter().rev() {
-                        self.on_op(op, flow);
-                    }
-
-                }
-            }
-            Terminator::Yield(Yield { values }) => {
-            }
-        }
-    }
-
-    // pub fn run(op: &Op, flow: &FlowAnalysis) -> Self {
-    //     let mut v_live = HashSet::new();
-    //     let mut op_live = HashSet::new();
-
-
-    //     let mut worklist = collect(op, |op| {
-    //         if let OpEnum::Store(_) = op.op {
-    //             true
-    //         } else {
-    //             false
-    //         }
-    //     });
-
-    //     while let Some(op) = worklist.pop() {
-    //         if !op_live.contains(&op) {
-    //             op_live.insert(op.clone());
-    //             for input in op.inputs() {
-    //                 v_live.insert(input.clone());
-    //                 if let Some(o) = flow.val_source(input) {
-    //                     worklist.push(o.clone());
-    //                 }
-    //             }
-
-    //             if let Some(par_block) = flow.parent_block.get(&op) {
-    //                 if let Some(par_op) = flow.block_parent.get(par_block) {
-    //                     worklist.push(par_op.clone());
-    //                 }
-    //             }
-    //         }
-
-    //     }
-        
-
-    //     Self { value_live: v_live, op_live }
-    // }
-}
 
 pub enum Encoding {
     Shared(SharedEncoding),
