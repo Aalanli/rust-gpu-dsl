@@ -82,21 +82,21 @@ make_type!(E, u64, usize, u32);
 fn criterion_benchmark(c: &mut Criterion) {
     use rust_gpu_dsl::{TraitRegistry, TraitRegistry2};
     let mut reg = TraitRegistry::new();
-    reg.register_trait(|a: &A| a as &dyn Trait1);
-    reg.register_trait(|a: &A| a as &dyn Trait2);
-    reg.register_trait(|a: &A| a as &dyn Trait3);
-    reg.register_trait(|a: &B| a as &dyn Trait1);
-    reg.register_trait(|a: &B| a as &dyn Trait2);
-    reg.register_trait(|a: &B| a as &dyn Trait3);
-    reg.register_trait(|a: &C| a as &dyn Trait1);
-    reg.register_trait(|a: &C| a as &dyn Trait2);
-    reg.register_trait(|a: &C| a as &dyn Trait3);
-    reg.register_trait(|a: &D| a as &dyn Trait1);
-    reg.register_trait(|a: &D| a as &dyn Trait2);
-    reg.register_trait(|a: &D| a as &dyn Trait3);
-    reg.register_trait(|a: &D| a as &dyn Trait1);
-    reg.register_trait(|a: &D| a as &dyn Trait2);
-    reg.register_trait(|a: &D| a as &dyn Trait3);
+    reg.register_trait::<A, _>(|a: &dyn Any| a.downcast_ref::<A>().unwrap() as &dyn Trait1);
+    reg.register_trait::<A, _>(|a: &dyn Any| a.downcast_ref::<A>().unwrap() as &dyn Trait2);
+    reg.register_trait::<A, _>(|a: &dyn Any| a.downcast_ref::<A>().unwrap() as &dyn Trait3);
+    reg.register_trait::<B, _>(|a: &dyn Any| a.downcast_ref::<B>().unwrap() as &dyn Trait1);
+    reg.register_trait::<B, _>(|a: &dyn Any| a.downcast_ref::<B>().unwrap() as &dyn Trait2);
+    reg.register_trait::<B, _>(|a: &dyn Any| a.downcast_ref::<B>().unwrap() as &dyn Trait3);
+    reg.register_trait::<C, _>(|a: &dyn Any| a.downcast_ref::<C>().unwrap() as &dyn Trait1);
+    reg.register_trait::<C, _>(|a: &dyn Any| a.downcast_ref::<C>().unwrap() as &dyn Trait2);
+    reg.register_trait::<C, _>(|a: &dyn Any| a.downcast_ref::<C>().unwrap() as &dyn Trait3);
+    reg.register_trait::<D, _>(|a: &dyn Any| a.downcast_ref::<D>().unwrap() as &dyn Trait1);
+    reg.register_trait::<D, _>(|a: &dyn Any| a.downcast_ref::<D>().unwrap() as &dyn Trait2);
+    reg.register_trait::<D, _>(|a: &dyn Any| a.downcast_ref::<D>().unwrap() as &dyn Trait3);
+    reg.register_trait::<E, _>(|a: &dyn Any| a.downcast_ref::<E>().unwrap() as &dyn Trait1);
+    reg.register_trait::<E, _>(|a: &dyn Any| a.downcast_ref::<E>().unwrap() as &dyn Trait2);
+    reg.register_trait::<E, _>(|a: &dyn Any| a.downcast_ref::<E>().unwrap() as &dyn Trait3);
     let work_list = black_box(vec![
         Box::new(A(1)) as Box<dyn Any>,
         Box::new(A(2)) as Box<dyn Any>,
@@ -119,30 +119,13 @@ fn criterion_benchmark(c: &mut Criterion) {
         b.iter(|| {
             let mut res = 1;
             for a in work_list.iter() {
-                if let Some(a) = a.downcast_ref::<A>() {
-                    let f = reg.get_trait::<dyn Trait1, _>(a).unwrap();
-                    res += f.f1(1);
-                    let f = reg.get_trait::<dyn Trait2, _>(a).unwrap();
-                    res += f.f1();
-                    let f = reg.get_trait::<dyn Trait3, _>(a).unwrap();
-                    res += f.f1();
-                }
-                if let Some(a) = a.downcast_ref::<B>() {
-                    let f = reg.get_trait::<dyn Trait1, _>(a).unwrap();
-                    res += f.f1(1);
-                    let f = reg.get_trait::<dyn Trait2, _>(a).unwrap();
-                    res += f.f1();
-                    let f = reg.get_trait::<dyn Trait3, _>(a).unwrap();
-                    res += f.f1();
-                }
-                if let Some(a) = a.downcast_ref::<C>() {
-                    let f = reg.get_trait::<dyn Trait1, _>(a).unwrap();
-                    res += f.f1(1);
-                    let f = reg.get_trait::<dyn Trait2, _>(a).unwrap();
-                    res += f.f1();
-                    let f = reg.get_trait::<dyn Trait3, _>(a).unwrap();
-                    res += f.f1();
-                }
+                let inner: &dyn Any = &**a;
+                let f = reg.get_trait::<dyn Trait1>(inner).unwrap();
+                res += f.f1(1);
+                let f = reg.get_trait::<dyn Trait2>(inner).unwrap();
+                res += f.f1();
+                let f = reg.get_trait::<dyn Trait3>(inner).unwrap();
+                res += f.f1();
             }
             res
         })
@@ -162,38 +145,24 @@ fn criterion_benchmark(c: &mut Criterion) {
     reg.register_trait(|a: &D| a as &dyn Trait1);
     reg.register_trait(|a: &D| a as &dyn Trait2);
     reg.register_trait(|a: &D| a as &dyn Trait3);
-    reg.register_trait(|a: &D| a as &dyn Trait1);
-    reg.register_trait(|a: &D| a as &dyn Trait2);
-    reg.register_trait(|a: &D| a as &dyn Trait3);
+    reg.register_trait(|a: &E| a as &dyn Trait1);
+    reg.register_trait(|a: &E| a as &dyn Trait2);
+    reg.register_trait(|a: &E| a as &dyn Trait3);
 
     c.bench_function("registry2", |b| {
         b.iter(|| {
             let mut res = 1;
             for a in work_list.iter() {
-                if let Some(a) = a.downcast_ref::<A>() {
-                    let f = reg.get_trait::<dyn Trait1, _>(a).unwrap();
-                    res += f.f1(1);
-                    let f = reg.get_trait::<dyn Trait2, _>(a).unwrap();
-                    res += f.f1();
-                    let f = reg.get_trait::<dyn Trait3, _>(a).unwrap();
-                    res += f.f1();
-                }
-                if let Some(a) = a.downcast_ref::<B>() {
-                    let f = reg.get_trait::<dyn Trait1, _>(a).unwrap();
-                    res += f.f1(1);
-                    let f = reg.get_trait::<dyn Trait2, _>(a).unwrap();
-                    res += f.f1();
-                    let f = reg.get_trait::<dyn Trait3, _>(a).unwrap();
-                    res += f.f1();
-                }
-                if let Some(a) = a.downcast_ref::<C>() {
-                    let f = reg.get_trait::<dyn Trait1, _>(a).unwrap();
-                    res += f.f1(1);
-                    let f = reg.get_trait::<dyn Trait2, _>(a).unwrap();
-                    res += f.f1();
-                    let f = reg.get_trait::<dyn Trait3, _>(a).unwrap();
-                    res += f.f1();
-                }
+                let inner: &dyn Any = &**a;
+
+                let f = reg.get_trait_any::<dyn Trait1>(inner).unwrap();
+                res += f.f1(1);
+                let f = reg.get_trait_any::<dyn Trait2>(inner).unwrap();
+                res += f.f1();
+                let f = reg.get_trait_any::<dyn Trait3>(inner).unwrap();
+                res += f.f1();
+                
+                
             }
             res
         })
