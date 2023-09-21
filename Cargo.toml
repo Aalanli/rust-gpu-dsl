@@ -19,3 +19,7 @@ harness = false
 [[bench]]
 name = "atomic"
 harness = false
+
+[[bench]]
+name = "trait_reg"
+harness = false
