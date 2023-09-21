@@ -372,130 +372,232 @@ impl Operation {
 
 
 use std::any::TypeId;
-pub struct OpVisitor<V> {
-    overloads: HashMap<TypeId, fn(&mut Self, &Op)>,
-    overload_visit_block: Option<fn(&mut Self, &Block)>,
-    overload_visit_value: Option<fn(&mut Self, &Value)>,
-    pub state: V
+
+pub trait Visitor<S> {
+    fn visit(&self, visitor: &dyn Visitor<S>, state: &mut S, op: &Op) -> Result<()>;
+    fn should_visit(&self, op: &Op) -> bool;
 }
 
-impl<V> OpVisitor<V> {
-    pub fn new(state: V) -> Self {
-        OpVisitor {
-            overloads: HashMap::new(),
-            overload_visit_block: None,
-            overload_visit_value: None,
-            state,
+struct BaseVisitor<S> {
+    visit_block: Option<fn(&mut S, &dyn Visitor<S>, &Block) -> Result<()>>,
+    visit_value: Option<fn(&mut S, &Value) -> Result<()>>,
+}
+
+impl<S> BaseVisitor<S> {
+    pub fn new() -> Self {
+        BaseVisitor {
+            visit_block: None,
+            visit_value: None,
         }
     }
-    
-    pub fn overload<T: 'static>(&mut self, f: fn(&mut Self, &Op)) {
-        self.overloads.insert(TypeId::of::<T>(), f);
+
+    pub fn add_visit_block(mut self, f: fn(&mut S, &dyn Visitor<S>, &Block) -> Result<()>) -> Self {
+        self.visit_block = Some(f);
+        self
     }
 
-    pub fn overload_visit_block(&mut self, f: fn(&mut Self, &Block)) {
-        self.overload_visit_block = Some(f);
+    pub fn add_visit_value(mut self, f: fn(&mut S, &Value) -> Result<()>) -> Self {
+        self.visit_value = Some(f);
+        self
     }
+}
 
-    pub fn overload_visit_value(&mut self, f: fn(&mut Self, &Value)) {
-        self.overload_visit_value = Some(f);
-    }
-
-    pub fn visit(&mut self, op: &Op) {
-        if let Some(overload) = self.overloads.get(&op.internal_as_any().type_id()) {
-            overload(self, op);
+impl<S> Visitor<S> for BaseVisitor<S> {
+    fn visit(&self, visitor: &dyn Visitor<S>, state: &mut S, op: &Op) -> Result<()> {
+        if let Some(f) = self.visit_value {
+            for arg in op.inputs() {
+                f(state, arg)?;
+            }
+        }
+        if let Some(f) = self.visit_block {
+            for block in op.blocks() {
+                f(state, visitor, block)?;
+            }
         } else {
-            if let Some(f) = self.overload_visit_value {
-                for v in op.inputs() {
-                    f(self, v);
-                }
-            }
-
-            for b in op.blocks() {
-                if let Some(f) = self.overload_visit_block {
-                    f(self, b);
-                } else {
-                    if let Some(f) = self.overload_visit_value {
-                        for v in b.args.iter() {
-                            f(self, v);
-                        }
-                    }
-                    for op in b.body.iter() {
-                        self.visit(op);
+            for block in op.blocks() {
+                if let Some(f) = self.visit_value {
+                    for arg in block.args.iter() {
+                        f(state, arg)?;
                     }
                 }
-            }
-
-            
-            if let Some(f) = self.overload_visit_value {
-                for v in op.outputs() {
-                    f(self, v);
+                for op in block.body.iter() {
+                    visitor.visit(visitor, state, op)?;
                 }
             }
         }
+        if let Some(f) = self.visit_value {
+            for arg in op.outputs() {
+                f(state, arg)?;
+            }
+        }
+        Ok(())
+    }
+
+    fn should_visit(&self, _op: &Op) -> bool { true }
+}
+
+struct FnVisitor<F, T, S> {
+    f: F,
+    _s: std::marker::PhantomData<S>,
+    _t: std::marker::PhantomData<T>,
+}
+
+impl<F, T, S> Visitor<S> for FnVisitor<F, T, S>
+where F: Fn(&mut S, &dyn Visitor<S>, &T) -> Result<()>, T: 'static
+{
+    fn visit(&self, visitor: &dyn Visitor<S>, state: &mut S, op: &Op) -> Result<()> {
+        if let Some(t) = op.as_any().downcast_ref::<T>() {
+            (self.f)(state, visitor, t)?;
+        }
+        Ok(())
+    }
+
+    fn should_visit(&self, op: &Op) -> bool { 
+        op.as_any().is::<T>()
     }
 }
 
-pub struct OpRewriter<V> {
-    overloads: HashMap<TypeId, fn(&mut Self, &Op) -> Op>,
-    overload_rewrite_block: Option<fn(&mut Self, &Block) -> Block>,
-    overload_rewrite_value: Option<fn(&mut Self, &Value) -> Value>,
-    pub state: V
+impl<F, S> Visitor<S> for F
+where F: Fn(&mut S, &dyn Visitor<S>, &Op) -> Result<()>
+{
+    fn visit(&self, visitor: &dyn Visitor<S>, state: &mut S, op: &Op) -> Result<()> {
+        self(state, visitor, op)
+    }
+
+    fn should_visit(&self, _op: &Op) -> bool { true }
 }
 
-impl<V> OpRewriter<V> {
-    pub fn new(state: V) -> Self {
-        OpRewriter {
-            overloads: HashMap::new(),
-            overload_rewrite_block: None,
-            overload_rewrite_value: None,
-            state,
+struct CachedVisitor<S> {
+    visitors: Vec<Box<dyn Visitor<S> + 'static>>,
+    cache: RefCell<HashMap<TypeId, usize>>,
+}
+
+impl<S: 'static> CachedVisitor<S> {
+    pub fn new() -> Self {
+        CachedVisitor {
+            visitors: vec![],
+            cache: RefCell::new(HashMap::new()),
         }
     }
 
-    pub fn overload<T: 'static>(&mut self, f: fn(&mut Self, &Op) -> Op) {
-        self.overloads.insert(TypeId::of::<T>(), f);
+    pub fn add_visitor<V: Visitor<S> + 'static>(mut self, visitor: V) -> Self {
+        self.visitors.push(Box::new(visitor));
+        self
     }
 
-    pub fn overload_rewrite_block(&mut self, f: fn(&mut Self, &Block) -> Block) {
-        self.overload_rewrite_block = Some(f);
+    pub fn add_fn<F, T: 'static>(self, f: F) -> Self
+    where F: Fn(&mut S, &T) + 'static {
+        let f = move |state: &mut S, _: &dyn Visitor<S>, t: &T| f(state, t);
+        self.add_fn_rec(f)
     }
 
-    pub fn overload_write_value(&mut self, f: fn(&mut Self, &Value) -> Value) {
-        self.overload_rewrite_value = Some(f);
+    pub fn add_fn_err<F, T: 'static>(self, f: F) -> Self
+    where F: Fn(&mut S, &T) -> Result<()> + 'static {
+        let f = move |state: &mut S, _: &dyn Visitor<S>, t: &T| f(state, t);
+        self.add_fn_err_rec(f)
     }
 
-    pub fn rewrite(&mut self, op: &Op) -> Op {
-        if let Some(overload) = self.overloads.get(&op.internal_as_any().type_id()) {
-            overload(self, op)
+    pub fn add_fn_rec<F, T: 'static>(mut self, f: F) -> Self
+    where F: Fn(&mut S, &dyn Visitor<S>, &T) + 'static
+    {
+        let f = move |state: &mut S, visitor: &dyn Visitor<S>, op: &Op| {
+            if let Some(t) = op.as_any().downcast_ref::<T>() {
+                f(state, visitor, t);
+            }
+            Ok(())
+        };
+        self.visitors.push(Box::new(FnVisitor { f, _s: std::marker::PhantomData, _t: std::marker::PhantomData }));
+        self
+    }
+
+    pub fn add_fn_err_rec<F, T: 'static>(mut self, f: F) -> Self
+    where F: Fn(&mut S, &dyn Visitor<S>, &T) -> Result<()> + 'static
+    {
+        self.visitors.push(Box::new(FnVisitor { f, _s: std::marker::PhantomData, _t: std::marker::PhantomData }));
+        self
+    }
+}
+
+impl<S: 'static> Visitor<S> for CachedVisitor<S> {
+    fn visit(&self, visitor: &dyn Visitor<S>, state: &mut S, op: &Op) -> Result<()> {
+        if let Some(idx) = self.cache.borrow().get(&op.internal_as_any().type_id()) {
+            self.visitors[*idx].visit(visitor, state, op)?;
         } else {
-            if self.overload_rewrite_value.is_some() || self.overload_rewrite_block.is_some() {
-                let mut new_op = op.op.clone();
-                if let Some(f) = self.overload_rewrite_value {
-                    for v in new_op.inputs_mut() {
-                        *v = f(self, v);
-                    }
+            for (idx, cur_visitor) in self.visitors.iter().enumerate() {
+                if cur_visitor.should_visit(op) {
+                    self.cache.borrow_mut().insert(op.internal_as_any().type_id(), idx);
+                    cur_visitor.visit(visitor, state, op)?;
+                    break;
                 }
-                if let Some(f) = self.overload_rewrite_block {
-                    for b in new_op.blocks_mut() {
-                        *b = f(self, b);
-                    }
-                }
-                if let Some(f) = self.overload_rewrite_value {
-                    for v in new_op.outputs_mut() {
-                        *v = f(self, v);
-                    }
-                }
-                Op::new(new_op, op.location().clone())
-            } else {
-                op.clone()
             }
+        }
+        Ok(())
+    }
+
+    fn should_visit(&self, op: &Op) -> bool {
+        self.visitors.iter().any(|v| v.should_visit(op))
+    }
+}
+
+struct SequentialVisitor<S> {
+    visitors: Vec<Box<dyn Visitor<S> + 'static>>,
+}
+
+impl<S: 'static> SequentialVisitor<S> {
+    pub fn new() -> Self {
+        SequentialVisitor {
+            visitors: vec![],
         }
     }
 
+    pub fn add_visitor<V: Visitor<S> + 'static>(mut self, visitor: V) -> Self {
+        self.visitors.push(Box::new(visitor));
+        self
+    }
+
+    pub fn add_fn<F, T: 'static>(self, f: F) -> Self
+    where F: Fn(&mut S, &T) + 'static {
+        let f = move |state: &mut S, _: &dyn Visitor<S>, t: &T| f(state, t);
+        self.add_fn_rec(f)
+    }
+
+    pub fn add_fn_err<F, T: 'static>(self, f: F) -> Self
+    where F: Fn(&mut S, &T) -> Result<()> + 'static {
+        let f = move |state: &mut S, _: &dyn Visitor<S>, t: &T| f(state, t);
+        self.add_fn_err_rec(f)
+    }
+
+    pub fn add_fn_rec<F, T: 'static>(mut self, f: F) -> Self
+    where F: Fn(&mut S, &dyn Visitor<S>, &T) + 'static
+    {
+        let f = move |state: &mut S, visitor: &dyn Visitor<S>, op: &Op| {
+            if let Some(t) = op.as_any().downcast_ref::<T>() {
+                f(state, visitor, t);
+            }
+            Ok(())
+        };
+        self.visitors.push(Box::new(FnVisitor { f, _s: std::marker::PhantomData, _t: std::marker::PhantomData }));
+        self
+    }
+
+    pub fn add_fn_err_rec<F, T: 'static>(mut self, f: F) -> Self
+    where F: Fn(&mut S, &dyn Visitor<S>, &T) -> Result<()> + 'static
+    {
+        self.visitors.push(Box::new(FnVisitor { f, _s: std::marker::PhantomData, _t: std::marker::PhantomData }));
+        self
+    }
 }
 
+impl <S: 'static> Visitor<S> for SequentialVisitor<S> {
+    fn visit(&self, visitor: &dyn Visitor<S>, state: &mut S, op: &Op) -> Result<()> {
+        for cur_visitor in self.visitors.iter() {
+            cur_visitor.visit(visitor, state, op)?;
+        }
+        Ok(())
+    }
 
+    fn should_visit(&self, _op: &Op) -> bool { true }
+}
 
 #[derive(Debug, Clone)]
 pub enum OpEnum { // could be a trait, once we have a better idea of the functions
@@ -1274,7 +1376,6 @@ impl IntrinsicElementwise {
     }
 }
 
-
 impl ElementWiseOp {
     pub fn build(f: ElementwiseFnOption, args: &[Value]) -> Result<Self> {
         let repr_arg = args.first().ok_or(Error::msg("args cannot be empty"))?;
@@ -1358,11 +1459,85 @@ pub enum ReduceOpOption {
 
 pub enum Encoding {
     Shared(SharedEncoding),
-    Local(LocalEncoding),
+    Local(BlockEncoding),
 }
 
-pub struct SharedEncoding {}
-pub struct LocalEncoding {}
+pub struct SharedEncoding {
+    shape: Vec<u32>,
+}
+pub struct BlockEncoding {
+    shape: Vec<u32>,
+    thread: Vec<u32>,
+    warp: Vec<u32>,
+    block: Vec<u32>,
+}
+
+pub struct EncodingState {
+    encodings: HashMap<Value, Encoding>,
+    num_blocks: u32,
+    num_warps: u32,
+}
+
+
+pub struct CorrectnessState {
+    defined_values: HashSet<Value>,
+}
+
+fn check_program_correctness_visitor() -> SequentialVisitor<CorrectnessState> {
+    type S = CorrectnessState;
+    SequentialVisitor::new()
+    .add_visitor(|state: &mut S, _: &dyn Visitor<S>, op: &Op| {
+        for arg in op.inputs() {
+            if !state.defined_values.contains(arg) {
+                return Err(Error::msg(format!("Value {:?} is used before being defined", arg)));
+            }
+        }
+        for arg in op.outputs() {
+            if state.defined_values.contains(arg) {
+                return Err(Error::msg(format!("Value {:?} is defined more than once", arg)));
+            }
+            state.defined_values.insert(arg.clone());
+        }
+        Ok(())
+    })
+    .add_visitor(
+        BaseVisitor::new().add_visit_block(|state: &mut S, _: &dyn Visitor<S>, block: &Block| {
+            for arg in block.args.iter() {
+                if state.defined_values.contains(arg) {
+                    return Err(Error::msg(format!("Value {:?} is defined more than once", arg)));
+                }
+                state.defined_values.insert(arg.clone());
+            }
+            Ok(())
+        })
+    )
+}
+
+fn encoding_visitor() -> CachedVisitor<EncodingState> {
+    CachedVisitor::new()
+    .add_fn(|state: &mut EncodingState, op: &ArangeOp| {
+        state.encodings.insert(op.output.clone(), Encoding::Shared(SharedEncoding {
+            shape: vec![1],
+        }));
+    })
+}
+
+fn test(a: Result<()>) {
+    match a {
+        Ok(_) => {}
+        Err(e) => {
+            let t = e.as_any();
+            println!("{:#?}", t.type_id());
+            println!("{}", e);
+        }
+    }
+}
+
+#[test]
+fn test1() {
+    let a = Err(Error::msg("test"));
+    test(a);
+}
 
 
 // #[test]
