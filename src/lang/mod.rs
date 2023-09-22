@@ -1157,7 +1157,7 @@ impl DotOp {
         }
         let val = Value::new(Type::tensor(
             a.type_of().eltype.clone(),
-            &vec![a.type_of().shape()[0], b.type_of().shape()[1]],
+            &[a.type_of().shape()[0], b.type_of().shape()[1]],
         ));
         Ok(DotOp {
             a: a.clone(),
@@ -1344,7 +1344,7 @@ impl IntrinsicElementwise {
 
     fn binary_upcast<'a>(a: &'a Type, b: &'a Type) -> &'a Type {
         if a.is_ptr() {
-            return a;
+            a
         } else if b.is_ptr() {
             return b;
         } else if a.is_float() {
@@ -1362,7 +1362,7 @@ impl IntrinsicElementwise {
 
     pub fn return_type<'a>(&self, vals: &'a [Value]) -> &'a Type {
         if self.num_operands() == 2 {
-            return Self::binary_upcast(&vals[0].type_of(), &vals[1].type_of());
+            return Self::binary_upcast(vals[0].type_of(), vals[1].type_of());
         } else if self.num_operands() == 3 {
             if let Self::Where = self {
                 return vals[1].type_of();
