@@ -1,13 +1,13 @@
 use std::cell::RefCell;
 use std::collections::{HashMap, HashSet};
 use std::hash::{Hash, Hasher};
-use std::ops::{Deref, DerefMut, Range};
+use std::ops::{Deref, Range};
 use std::rc::Rc;
 
-use anyhow::{Context, Error, Result};
+use anyhow::{Error, Result};
 use crate::AsAny;
 
-use super::utils::Doc;
+
 
 // mutable value semantics, lol
 // we adopt mutable value semantics in the tensor program for the sake of simplicity, so no aliasing, only mutation via
@@ -654,11 +654,11 @@ impl OpEnum {
             Self::Reduce(op) => vec![&op.input],
             Self::ElementWise(op) => op.args.iter().collect(),
             Self::Dot(op) => vec![&op.a, &op.b],
-            Self::Full(op) => vec![],
-            Self::Arange(op) => vec![],
+            Self::Full(_op) => vec![],
+            Self::Arange(_op) => vec![],
             Self::For(op) => vec![&op.start, &op.end, &op.step],
             Self::If(op) => vec![&op.cond],
-            Self::FunctionOp(op) => vec![],
+            Self::FunctionOp(_op) => vec![],
             Self::Assign(op) => vec![&op.lhs, &op.rhs],
         }
     }
@@ -691,11 +691,11 @@ impl OpEnum {
             Self::Reduce(op) => vec![&mut op.input],
             Self::ElementWise(op) => op.args.iter_mut().collect(),
             Self::Dot(op) => vec![&mut op.a, &mut op.b],
-            Self::Full(op) => vec![],
-            Self::Arange(op) => vec![],
+            Self::Full(_op) => vec![],
+            Self::Arange(_op) => vec![],
             Self::For(op) => vec![&mut op.start, &mut op.end, &mut op.step],
             Self::If(op) => vec![&mut op.cond],
-            Self::FunctionOp(op) => vec![],
+            Self::FunctionOp(_op) => vec![],
             Self::Assign(op) => vec![&mut op.lhs, &mut op.rhs],
         }
     }
@@ -704,7 +704,7 @@ impl OpEnum {
         match &self {
             Self::ProgramID(op) => {vec![&op.output]},
             Self::Load(op) => vec![&op.output],
-            Self::Store(op) => vec![],
+            Self::Store(_op) => vec![],
             Self::Reshape(op) => vec![&op.output],
             Self::Permute(op) => vec![&op.output],
             Self::Slice(op) => vec![&op.output],
@@ -715,10 +715,10 @@ impl OpEnum {
             Self::Dot(op) => vec![&op.output],
             Self::Full(op) => vec![&op.output],
             Self::Arange(op) => vec![&op.output],
-            Self::For(op) => vec![],
-            Self::If(op) => vec![],
-            Self::FunctionOp(op) => vec![],
-            Self::Assign(op) => vec![],
+            Self::For(_op) => vec![],
+            Self::If(_op) => vec![],
+            Self::FunctionOp(_op) => vec![],
+            Self::Assign(_op) => vec![],
         }
     }
 
@@ -726,7 +726,7 @@ impl OpEnum {
         match self {
             Self::ProgramID(op) => {vec![&mut op.output]},
             Self::Load(op) => vec![&mut op.output],
-            Self::Store(op) => vec![],
+            Self::Store(_op) => vec![],
             Self::Reshape(op) => vec![&mut op.output],
             Self::Permute(op) => vec![&mut op.output],
             Self::Slice(op) => vec![&mut op.output],
@@ -737,10 +737,10 @@ impl OpEnum {
             Self::Dot(op) => vec![&mut op.output],
             Self::Full(op) => vec![&mut op.output],
             Self::Arange(op) => vec![&mut op.output],
-            Self::For(op) => vec![],
-            Self::If(op) => vec![],
-            Self::FunctionOp(op) => vec![],
-            Self::Assign(op) => vec![],
+            Self::For(_op) => vec![],
+            Self::If(_op) => vec![],
+            Self::FunctionOp(_op) => vec![],
+            Self::Assign(_op) => vec![],
         }
     }
 
