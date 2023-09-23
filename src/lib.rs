@@ -7,41 +7,74 @@ pub mod utils;
 mod linear_ir;
 
 pub struct TraitRegistry {
-    trait_converters: HashMap<(std::any::TypeId, std::any::TypeId), Box<dyn for <'a> Fn(&'a dyn Any) -> *const ()>>,
+    fall_back_converter: HashMap<(std::any::TypeId, std::any::TypeId), Box<dyn for <'a> Fn(&'a dyn Any) -> *const ()>>,
+    trait_converter: HashMap<(std::any::TypeId, std::any::TypeId), Box<dyn for <'a> Fn(&'a dyn Any, *mut u8)>>,
 }
 
 impl TraitRegistry {
+    const STACK_BUF_SIZE: usize = 16; // enough space for fat pointer
+    const USE_STACK: bool = true;
+
     pub fn new() -> Self {
-        TraitRegistry
-     {
-            trait_converters: HashMap::new(),
+        TraitRegistry{
+            fall_back_converter: HashMap::new(),
+            trait_converter: HashMap::new(),
         }
     }
 
     pub fn get_trait<'a, TRAIT: 'static + ?Sized>(&self, a: &'a dyn Any) -> Option<&'a TRAIT> {
-        let f = self
-            .trait_converters
-            .get(&(a.type_id(), TypeId::of::<TRAIT>()))?;
-        unsafe {
-            let a = f(a);
-            let b = Box::<&TRAIT>::from_raw(a as *mut &TRAIT);
-            Some(*b)
+        if std::mem::size_of::<&TRAIT>() > Self::STACK_BUF_SIZE || !Self::USE_STACK {
+            let f = self
+                .fall_back_converter
+                .get(&(a.type_id(), TypeId::of::<TRAIT>()))?;
+            unsafe {
+                let a = f(a);
+                let b = Box::<&TRAIT>::from_raw(a as *mut &TRAIT);
+                Some(*b)
+            }
+        } else {
+            let mut buf = [0u8; Self::STACK_BUF_SIZE];
+            let ptr = &mut buf[0] as *mut u8;
+            let f = self
+                .trait_converter
+                .get(&(a.type_id(), TypeId::of::<TRAIT>()))?;
+            f(a, ptr);
+            unsafe {
+                let b = *(ptr as *const &TRAIT);
+                Some(b)
+            }
         }
     }
 
     pub fn register_trait<F: 'static, T: 'static, TRAIT: 'static + ?Sized>(&mut self, f: F)
     where F: for<'a> Fn(&'a T) -> &'a TRAIT
     {
-        let f1 = move |a: &dyn Any| {
-            let a = a.downcast_ref::<T>().unwrap();
-            let any = f(a);
-            let ptr = Box::new(any);
-            let ptr_of = Box::<&TRAIT>::into_raw(ptr);
-            ptr_of as *const ()
-        };
-        let a: Box<dyn for <'a> Fn(&'a dyn Any) -> *const ()> = Box::new(f1);
-        self.trait_converters
-            .insert((TypeId::of::<T>(), TypeId::of::<TRAIT>()), a);
+        if std::mem::size_of::<&TRAIT>() > Self::STACK_BUF_SIZE || !Self::USE_STACK {
+            // allocate on heap
+            let f1 = move |a: &dyn Any| {
+                let a = a.downcast_ref::<T>().unwrap();
+                let any = f(a);
+                let ptr = Box::new(any);
+                let ptr_of = Box::<&TRAIT>::into_raw(ptr);
+                ptr_of as *const ()
+            };
+            let a: Box<dyn for <'a> Fn(&'a dyn Any) -> *const ()> = Box::new(f1);
+            self.fall_back_converter
+                .insert((TypeId::of::<T>(), TypeId::of::<TRAIT>()), a);
+        } else {
+            // allocate on stack
+            let f2 = move |a: &dyn Any, ptr: *mut u8| {
+                let a = a.downcast_ref::<T>().unwrap();
+                let tr = f(a);
+                unsafe {
+                    let tr_ptr = &tr as *const &TRAIT as *const u8;
+                    std::ptr::copy_nonoverlapping(tr_ptr, ptr, std::mem::size_of::<&TRAIT>());
+                }
+            };
+            let a: Box<dyn for <'a> Fn(&'a dyn Any, *mut u8)> = Box::new(f2);
+            self.trait_converter
+                .insert((TypeId::of::<T>(), TypeId::of::<TRAIT>()), a);
+        }
     }
 }
 
