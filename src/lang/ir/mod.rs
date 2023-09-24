@@ -1,6 +1,409 @@
 use anyhow::{Error, Result};
-use std::ops::Range;
-use crate::lang::{Block, Value, Type, ElType, Dtype, Constant};
+use std::cell::RefCell;
+use std::hash::{Hash, Hasher};
+use std::ops::{Deref, Range};
+use std::rc::Rc;
+use super::Location;
+
+/// Type has value semantics, and are equal if they have the same data
+/// Everying is a tensor type, scalars are represented by tensors with rank 0
+#[derive(Clone, Eq, PartialEq, Debug)]
+pub struct Type {
+    eltype: ElType,
+    shape: Vec<usize>, 
+    // todo: Encoding
+}
+
+impl Type {
+    pub fn scalar(eltype: ElType) -> Self {
+        Type {
+            eltype,
+            shape: vec![],
+        }
+    }
+
+    pub fn i32_scalar() -> Self {
+        Type::scalar(ElType::Val(Dtype::I32))
+    }
+
+    pub fn f32_scalar() -> Self {
+        Type::scalar(ElType::Val(Dtype::F32))
+    }
+
+    pub fn i32_ptr() -> Self {
+        Type::scalar(ElType::Ptr(Dtype::I32))
+    }
+
+    pub fn f32_ptr() -> Self {
+        Type::scalar(ElType::Ptr(Dtype::F32))
+    }
+
+    pub fn is_bool(&self) -> bool {
+        match &self.eltype {
+            ElType::Val(Dtype::I1) => true,
+            _ => false,
+        }
+    }
+
+    pub fn is_float(&self) -> bool {
+        match &self.eltype {
+            ElType::Val(Dtype::F32) => true,
+            _ => false,
+        }
+    }
+
+    pub fn is_int(&self) -> bool {
+        match &self.eltype {
+            ElType::Val(Dtype::I32) => true,
+            _ => false,
+        }
+    }
+
+    pub fn is_scalar(&self) -> bool {
+        self.rank() == 0
+    }
+
+    pub fn is_ptr(&self) -> bool {
+        match &self.eltype {
+            ElType::Ptr(_) => true,
+            _ => false,
+        }
+    }
+
+    pub fn tensor(eltype: ElType, shape: &[usize]) -> Self {
+        Type {
+            eltype,
+            shape: shape.into(),
+        }
+    }
+
+    pub fn rank(&self) -> usize {
+        self.shape.len()
+    }
+
+    pub fn shape(&self) -> &[usize] {
+        &self.shape
+    }
+
+    pub fn to_pointer(&self) -> Self {
+        let dtype = if let ElType::Val(dtype) = &self.eltype {
+            ElType::Ptr(dtype.clone())
+        } else {
+            self.eltype.clone()
+        };
+        Type {
+            eltype: dtype,
+            shape: self.shape.clone(),
+        }
+    }
+
+    pub fn to_value(&self) -> Self {
+        let dtype = if let ElType::Ptr(dtype) = &self.eltype {
+            ElType::Val(dtype.clone())
+        } else {
+            self.eltype.clone()
+        };
+        Type {
+            eltype: dtype,
+            shape: self.shape.clone(),
+        }
+    }
+
+    pub fn eltype(&self) -> &ElType {
+        &self.eltype
+    }
+}
+
+#[derive(Clone, PartialEq, Eq, Debug)]
+pub enum ElType {
+    Ptr(Dtype),
+    Val(Dtype),
+}
+
+impl ElType {
+    pub fn bits(&self) -> usize {
+        match self {
+            ElType::Ptr(_) => 64,
+            ElType::Val(dtype) => match dtype {
+                Dtype::I1 => 8,
+                Dtype::I32 => 32,
+                Dtype::F32 => 32,
+            },
+        }
+    }
+
+    pub fn inner_dtype(&self) -> &Dtype {
+        match self {
+            ElType::Ptr(dtype) => dtype,
+            ElType::Val(dtype) => dtype,
+        }
+    }
+}
+
+#[derive(Clone, PartialEq, Eq, Debug)]
+pub enum Dtype {
+    I1,
+    I32,
+    F32,
+}
+
+#[derive(Clone, PartialEq, Debug)]
+pub enum Constant {
+    I32(i32),
+    F32(f32),
+    Bool(bool),
+}
+
+impl Constant {
+    pub fn dtype(&self) -> Dtype {
+        match self {
+            Constant::I32(_) => Dtype::I32,
+            Constant::F32(_) => Dtype::F32,
+            Constant::Bool(_) => Dtype::I1,
+        }
+    }
+
+    pub fn type_of(&self) -> Type {
+        Type::scalar(ElType::Val(self.dtype()))
+    }
+}
+
+impl From<i32> for Constant {
+    fn from(val: i32) -> Self {
+        Constant::I32(val)
+    }
+}
+
+impl From<f32> for Constant {
+    fn from(val: f32) -> Self {
+        Constant::F32(val)
+    }
+}
+
+impl From<bool> for Constant {
+    fn from(val: bool) -> Self {
+        Constant::Bool(val)
+    }
+}
+
+
+
+#[derive(Clone, Debug)]
+pub struct Value(Rc<ValueImpl>);
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
+pub struct ValueId(usize);
+
+impl Value {
+    pub fn new(type_of: Type) -> Self {
+        Value(Rc::new(ValueImpl {
+            type_of,
+            name_hint: RefCell::new(None),
+        }))
+    }
+
+    pub fn type_of(&self) -> &Type {
+        &self.0.type_of
+    }
+
+    pub fn name_hint(self, name: impl Into<String>) -> Self {
+        self.0.name_hint.replace(Some(name.into()));
+        self
+    }
+
+    pub fn name(&self) -> Option<String> {
+        self.0.name_hint.borrow().clone()
+    }
+
+    pub fn id(&self) -> usize {
+        Rc::as_ptr(&self.0) as usize
+    }
+}
+
+impl PartialEq for Value {
+    fn eq(&self, other: &Self) -> bool {
+        Rc::ptr_eq(&self.0, &other.0)
+    }
+}
+impl Eq for Value {}
+
+impl Hash for Value {
+    fn hash<H: Hasher>(&self, state: &mut H) {
+        Rc::as_ptr(&self.0).hash(state)
+    }
+}
+
+#[derive(Debug)]
+struct ValueImpl {
+    type_of: Type,
+    name_hint: RefCell<Option<String>>,
+}
+
+
+// pub type Op = Rc<Operation>;
+
+#[derive(Debug, Clone)]
+pub struct Op(Rc<Operation>);
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+pub struct OpId(usize);
+
+
+#[derive(Debug, Clone)]
+pub struct Block(Rc<BlockImpl>);
+
+impl Block {
+    pub fn new(args: Vec<Value>, body: Vec<Op>) -> Self {
+        Block(Rc::new(BlockImpl { args, body }))
+    }
+
+    pub fn args(&self) -> &[Value] {
+        &self.0.args
+    }
+
+    pub fn body(&self) -> &[Op] {
+        &self.0.body
+    }
+}
+
+impl Deref for Block {
+    type Target = BlockImpl;
+
+    fn deref(&self) -> &Self::Target {
+        &self.0
+    }
+}
+
+impl Hash for Block {
+    fn hash<H: Hasher>(&self, state: &mut H) {
+        Rc::as_ptr(&self.0).hash(state);
+    }
+}
+
+impl PartialEq for Block {
+    fn eq(&self, other: &Self) -> bool {
+        Rc::ptr_eq(&self.0, &other.0)
+    }
+}
+
+impl Eq for Block {}
+
+#[derive(Debug, Clone)]
+pub struct BlockImpl {
+    pub args: Vec<Value>,
+    pub body: Vec<Op>,
+}
+
+
+impl Op {
+    pub fn new(op: OpEnum, location: Location) -> Self {
+        Op(Rc::new(Operation::new(op, location)))
+    }
+
+    pub fn location(&self) -> &Location {
+        &self.0.location
+    }
+
+    pub fn inputs(&self) -> Vec<&Value> {
+        self.0.op.inputs()
+    }
+
+    pub fn outputs(&self) -> Vec<&Value> {
+        self.0.op.outputs()
+    }
+
+    pub fn blocks(&self) -> Vec<&Block> {
+        self.0.op.blocks()
+    }
+
+    pub fn internal_as_any(&self) -> &dyn std::any::Any {
+        self.0.op.internal_as_any()
+    }
+
+    pub fn name(&self) -> &str {
+        self.0.op.name()
+    }
+}
+
+impl Deref for Op {
+    type Target = Operation;
+
+    fn deref(&self) -> &Self::Target {
+        &self.0
+    }
+}
+
+impl Hash for Op {
+    fn hash<H: Hasher>(&self, state: &mut H) {
+        Rc::as_ptr(&self.0).hash(state);
+    }
+}
+
+impl PartialEq for Op {
+    fn eq(&self, other: &Self) -> bool {
+        Rc::ptr_eq(&self.0, &other.0)
+    }
+}
+impl Eq for Op {}
+
+#[derive(Debug)]
+pub struct Operation {
+    location: Location,
+    op: OpEnum,
+}
+
+impl Operation {
+    pub fn new(op: OpEnum, location: Location) -> Self {
+        Operation { op, location }
+    }
+}
+
+struct BuilderCTX {
+    ops: RefCell<Vec<Vec<Op>>>,
+}
+
+impl BuilderCTX {
+    fn new() -> Self {
+        BuilderCTX { ops: RefCell::new(vec![]) }
+    }
+
+    fn new_block(&self) {
+        self.ops.borrow_mut().push(vec![]);
+    }
+
+    fn push(&self, op: Op) {
+        self.ops.borrow_mut().last_mut().unwrap().push(op);
+    }
+
+    fn pop_block(&self) -> Vec<Op> {
+        let bk = self.ops.borrow_mut().pop().unwrap();
+        bk
+    }
+}
+
+thread_local! {
+    static BUILDER_CTX: BuilderCTX = BuilderCTX::new(); 
+}
+
+pub fn ctx_push_block() {
+    BUILDER_CTX.with(|ctx| {
+        ctx.new_block();
+    });
+}
+
+pub fn ctx_pop_block() -> Vec<Op> {
+    BUILDER_CTX.with(|ctx| {
+        ctx.pop_block()
+    })
+}
+
+pub fn ctx_push(op: &Op) {
+    BUILDER_CTX.with(|ctx| {
+        ctx.push(op.clone());
+    });
+}
+
+
 
 
 #[derive(Debug, Clone)]
@@ -12,7 +415,7 @@ pub enum OpEnum { // could be a trait, once we have a better idea of the functio
 
     Reshape(ReshapeOp),
     Permute(PermuteOp),
-    Slice(SliceOp),
+    // Slice(SliceOp),
     Expand(ExpandOp),
     Broadcast(BroadcastOp),
 
@@ -33,7 +436,7 @@ pub enum OpEnum { // could be a trait, once we have a better idea of the functio
 impl OpEnum {
     pub fn inputs(&self) -> Vec<&Value> {
         match &self {
-            Self::ProgramID(op) => {vec![&op.output]},
+            Self::ProgramID(op) => {vec![]},
             Self::Load(op) => {
                 let mut inputs = vec![&op.ptr];
                 if let Some(mask) = &op.mask {
@@ -53,9 +456,9 @@ impl OpEnum {
             }
             Self::Reshape(op) => vec![&op.input],
             Self::Permute(op) => vec![&op.input],
-            Self::Slice(op) => vec![&op.input],
+            // Self::Slice(op) => vec![&op.input],
             Self::Expand(op) => vec![&op.input],
-            Self::Broadcast(op) => vec![&op.input, &op.other],
+            Self::Broadcast(op) => vec![&op.input],
             Self::Reduce(op) => vec![&op.input],
             Self::ElementWise(op) => op.args.iter().collect(),
             Self::Dot(op) => vec![&op.a, &op.b],
@@ -68,43 +471,6 @@ impl OpEnum {
         }
     }
 
-    pub fn inputs_mut(&mut self) -> Vec<&mut Value> {
-        match self {
-            Self::ProgramID(op) => {vec![&mut op.output]},
-            Self::Load(op) => {
-                let mut inputs = vec![&mut op.ptr];
-                if let Some(mask) = &mut op.mask {
-                    inputs.push(mask);
-                }
-                if let Some(value) = &mut op.value {
-                    inputs.push(value);
-                }
-                inputs
-            }
-            Self::Store(op) => {
-                let mut inputs = vec![&mut op.ptr, &mut op.value];
-                if let Some(mask) = &mut op.mask {
-                    inputs.push(mask);
-                }
-                inputs
-            }
-            Self::Reshape(op) => vec![&mut op.input],
-            Self::Permute(op) => vec![&mut op.input],
-            Self::Slice(op) => vec![&mut op.input],
-            Self::Expand(op) => vec![&mut op.input],
-            Self::Broadcast(op) => vec![&mut op.input, &mut op.other],
-            Self::Reduce(op) => vec![&mut op.input],
-            Self::ElementWise(op) => op.args.iter_mut().collect(),
-            Self::Dot(op) => vec![&mut op.a, &mut op.b],
-            Self::Full(_op) => vec![],
-            Self::Arange(_op) => vec![],
-            Self::For(op) => vec![&mut op.start, &mut op.end, &mut op.step],
-            Self::If(op) => vec![&mut op.cond],
-            Self::FunctionOp(_op) => vec![],
-            Self::Assign(op) => vec![&mut op.lhs, &mut op.rhs],
-        }
-    }
-
     pub fn outputs(&self) -> Vec<&Value> {
         match &self {
             Self::ProgramID(op) => {vec![&op.output]},
@@ -112,7 +478,7 @@ impl OpEnum {
             Self::Store(_op) => vec![],
             Self::Reshape(op) => vec![&op.output],
             Self::Permute(op) => vec![&op.output],
-            Self::Slice(op) => vec![&op.output],
+            // Self::Slice(op) => vec![&op.output],
             Self::Expand(op) => vec![&op.output],
             Self::Broadcast(op) => vec![&op.output],
             Self::Reduce(op) => vec![&op.output],
@@ -120,28 +486,6 @@ impl OpEnum {
             Self::Dot(op) => vec![&op.output],
             Self::Full(op) => vec![&op.output],
             Self::Arange(op) => vec![&op.output],
-            Self::For(_op) => vec![],
-            Self::If(_op) => vec![],
-            Self::FunctionOp(_op) => vec![],
-            Self::Assign(_op) => vec![],
-        }
-    }
-
-    pub fn outputs_mut(&mut self) -> Vec<&mut Value> {
-        match self {
-            Self::ProgramID(op) => {vec![&mut op.output]},
-            Self::Load(op) => vec![&mut op.output],
-            Self::Store(_op) => vec![],
-            Self::Reshape(op) => vec![&mut op.output],
-            Self::Permute(op) => vec![&mut op.output],
-            Self::Slice(op) => vec![&mut op.output],
-            Self::Expand(op) => vec![&mut op.output],
-            Self::Broadcast(op) => vec![&mut op.output],
-            Self::Reduce(op) => vec![&mut op.output],
-            Self::ElementWise(op) => vec![&mut op.output],
-            Self::Dot(op) => vec![&mut op.output],
-            Self::Full(op) => vec![&mut op.output],
-            Self::Arange(op) => vec![&mut op.output],
             Self::For(_op) => vec![],
             Self::If(_op) => vec![],
             Self::FunctionOp(_op) => vec![],
@@ -158,15 +502,6 @@ impl OpEnum {
         }
     }
 
-    pub fn blocks_mut(&mut self) -> Vec<&mut Block> {
-        match self {
-            Self::If(op) => {vec![&mut op.then, &mut op.else_]},
-            Self::For(op) => {vec![&mut op.body]},
-            Self::FunctionOp(op) => {vec![&mut op.body]},
-            _ => vec![],
-        }
-    }
-
     pub fn internal_as_any(&self) -> &dyn std::any::Any {
         match self {
             Self::ProgramID(x) => x,
@@ -174,7 +509,7 @@ impl OpEnum {
             Self::Store(x) => x,
             Self::Reshape(x) => x,
             Self::Permute(x) => x,
-            Self::Slice(x) => x,
+            // Self::Slice(x) => x,
             Self::Expand(x) => x,
             Self::Broadcast(x) => x,
             Self::Reduce(x) => x,
@@ -186,6 +521,28 @@ impl OpEnum {
             Self::If(x) => x,
             Self::FunctionOp(x) => x,
             Self::Assign(x) => x,
+        }
+    }
+
+    pub fn name(&self) -> &str {
+        match self {
+            Self::ProgramID(_) => "ProgramID",
+            Self::Load(_) => "Load",
+            Self::Store(_) => "Store",
+            Self::Reshape(_) => "Reshape",
+            Self::Permute(_) => "Permute",
+            // Self::Slice(_) => "Slice",
+            Self::Expand(_) => "Expand",
+            Self::Broadcast(_) => "Broadcast",
+            Self::Reduce(_) => "Reduce",
+            Self::ElementWise(_) => "ElementWise",
+            Self::Dot(_) => "Dot",
+            Self::Full(_) => "Full",
+            Self::Arange(_) => "Arange",
+            Self::For(_) => "For",
+            Self::If(_) => "If",
+            Self::FunctionOp(_) => "FunctionOp",
+            Self::Assign(_) => "Assign",
         }
     }
 }
@@ -452,12 +809,11 @@ impl ExpandOp {
 #[derive(Debug, Clone)]
 pub struct BroadcastOp {
     pub input: Value,
-    pub other: Value,
     pub output: Value,
 }
 
 impl BroadcastOp {
-    fn broad_cast_shape(a: &[usize], b: &[usize]) -> Result<Vec<usize>> {
+    pub fn broad_cast_shape(a: &[usize], b: &[usize]) -> Result<Vec<usize>> {
         if b.len() > a.len() {
             return Self::broad_cast_shape(b, a);
         }
@@ -482,15 +838,14 @@ impl BroadcastOp {
         Ok(oshape)
     }
 
-    pub fn build(input: &Value, other: &Value) -> Result<Self> {
+    pub fn build(input: &Value, shape: &[usize]) -> Result<Self> {
         let shape = BroadcastOp::broad_cast_shape(
             input.type_of().shape(),
-            other.type_of().shape(),
+            shape
         )?;
         let val = Value::new(Type::tensor(input.type_of().eltype.clone(), &shape));
         Ok(BroadcastOp {
             input: input.clone(),
-            other: other.clone(),
             output: val.clone(),
         })
     }

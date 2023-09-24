@@ -1,7 +1,7 @@
 use std::any::{Any, TypeId};
 use std::collections::HashMap;
 
-
+mod examples;
 pub mod lang;
 pub mod utils;
 mod linear_ir;

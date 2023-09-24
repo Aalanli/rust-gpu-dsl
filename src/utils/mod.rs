@@ -2,12 +2,12 @@
 pub enum Doc {
     Indent(Box<Doc>),
     Lines(Vec<Doc>),
-    Text(String),
+    Token(String),
 }
 
 impl Doc {
-    pub fn text(s: impl Into<String>) -> Self {
-        Doc::Text(s.into())
+    pub fn token(s: impl Into<String>) -> Self {
+        Doc::Token(s.into())
     }
 
     pub fn indent(self) -> Self {
@@ -24,8 +24,16 @@ impl Doc {
         }
     }
 
-    pub fn append_text(self, other: impl Into<String>) -> Self {
-        self.append(Doc::text(other))
+    pub fn append_token(self, other: impl Into<String>) -> Self {
+        self.append(Doc::token(other))
+    }
+
+    pub fn len(&self) -> usize {
+        match self {
+            Doc::Indent(d) => d.len(),
+            Doc::Lines(v) => v.iter().map(|d| d.len()).sum(),
+            Doc::Token(t) => t.len(),
+        }
     }
 
     pub fn into_string(self, indent: usize) -> String {
@@ -39,7 +47,7 @@ impl Doc {
                         into_string_helper(indent_level, d, s, indent);
                     }
                 }
-                Doc::Text(t) => {
+                Doc::Token(t) => {
                     for _ in 0..indent_level * indent {
                         s.push(' ');
                     }
