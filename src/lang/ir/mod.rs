@@ -211,12 +211,82 @@ impl From<bool> for Constant {
 }
 
 
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
+pub struct OpId(usize);
 
-#[derive(Clone, Debug)]
-pub struct Value(Rc<ValueImpl>);
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
+pub struct BlockId(usize);
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
 pub struct ValueId(usize);
+
+
+pub struct IRModule {
+
+}
+
+impl IRModule {
+    pub fn operands(&self, op: OpId) -> &[ValueId] { todo!() }
+    pub fn returns(&self, op: OpId) ->  &[ValueId] { todo!() }
+    pub fn blocks(&self, op: OpId) ->   &[BlockId] { todo!() }
+    pub fn parent(&self, op: OpId) ->   Option<BlockId> { todo!() }
+    pub fn op_type(&self, op: OpId) -> &Operations { todo!() }
+    pub fn op_location(&self, op: OpId) -> &Location { todo!() }
+    pub fn op_attr<T: 'static>(&self) -> Option<&T> { todo!() }
+
+    pub fn block_args(&self, block: BlockId) -> &[ValueId] { todo!() }
+    pub fn block_ops(&self, block: BlockId) -> &[OpId] { todo!() }
+    pub fn block_parent(&self, block: BlockId) -> Option<OpId> { todo!() }
+
+    pub fn value_type(&self, value: ValueId) -> &Type { todo!() }
+    pub fn value_source(&self, value: ValueId) -> OpId { todo!() }
+    pub fn value_users(&self) -> &[OpId] { todo!() }
+    pub fn value_attr<T: 'static>(&self) -> Option<&T> { todo!() }
+
+    pub fn build_op(&mut self, op_ty: Operations, args: &[ValueId], returns: &[ValueId], blocks: &[BlockId]) -> OpId { todo!() }
+    pub fn build_block(&mut self, args: &[ValueId], ops: &[OpId]) -> BlockId { todo!() }
+    pub fn build_value(&mut self, ty: Type) -> ValueId { todo!() }
+
+    pub fn set_op_operand(&mut self, op: OpId, idx: usize, value: ValueId) { todo!() }
+    pub fn set_op_return(&mut self, op: OpId, idx: usize, value: ValueId) { todo!() }
+    pub fn set_op_block(&mut self, op: OpId, idx: usize, value: BlockId) { todo!() }
+    pub fn set_op_operands(&mut self, op: OpId, values: &[ValueId]) { todo!() }
+    pub fn set_op_returns(&mut self, op: OpId, values: &[ValueId]) { todo!() }
+    pub fn set_op_blocks(&mut self, op: OpId, blocks: &[BlockId]) { todo!() }
+
+    pub fn set_block_arg(&mut self, block: BlockId, idx: usize, value: ValueId) { todo!() }
+    pub fn set_block_args(&mut self, block: BlockId, values: &[ValueId]) { todo!() }
+    pub fn set_block_ops(&mut self, block: BlockId, ops: &[OpId]) { todo!() }
+
+    pub fn replace_op(&mut self, op: OpId, new_op: OpId) { todo!() }
+
+    pub fn set_op_attr<T: 'static>(&mut self, op: OpId, attr: T) { todo!() }
+    pub fn set_value_attr<T: 'static>(&mut self, value: ValueId, attr: T) { todo!() }
+}
+
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
+pub enum Operations {
+    ProgramId,
+    Load,
+    Store,
+
+    Arange,
+    ExpandDim,
+    Broadcast,
+
+    Reduce,
+    ElementWise,
+    Dot,
+
+    For,
+    SCFFor,
+}
+
+
+
+#[derive(Clone, Debug)]
+pub struct Value(Rc<ValueImpl>);
 
 impl Value {
     pub fn new(type_of: Type) -> Self {
@@ -268,10 +338,6 @@ struct ValueImpl {
 
 #[derive(Debug, Clone)]
 pub struct Op(Rc<Operation>);
-
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
-pub struct OpId(usize);
-
 
 #[derive(Debug, Clone)]
 pub struct Block(Rc<BlockImpl>);
