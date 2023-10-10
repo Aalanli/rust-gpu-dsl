@@ -202,28 +202,6 @@ impl <S: 'static> Visitor<S> for SequentialVisitor<S> {
 
 
 
-pub enum Encoding {
-    Shared(SharedEncoding),
-    Local(BlockEncoding),
-}
-
-pub struct SharedEncoding {
-    shape: Vec<u32>,
-}
-pub struct BlockEncoding {
-    shape: Vec<u32>,
-    thread: Vec<u32>,
-    warp: Vec<u32>,
-    block: Vec<u32>,
-}
-
-pub struct EncodingState {
-    encodings: HashMap<Value, Encoding>,
-    num_blocks: u32,
-    num_warps: u32,
-}
-
-
 pub struct CorrectnessState {
     defined_values: HashSet<Value>,
 }
@@ -233,7 +211,8 @@ struct PrinterState {
     indent_size: usize,
     indent: usize,
     buf: String,
-    names: HashMap<String, usize>
+    hints: HashMap<String, usize>,
+    names: HashMap<Value, String>,
 }
 
 impl PrinterState {
@@ -242,6 +221,7 @@ impl PrinterState {
             indent_size,
             indent: 0,
             buf: String::new(),
+            hints: HashMap::new(),
             names: HashMap::new(),
         }
     }
@@ -296,15 +276,21 @@ impl PrinterState {
 
     fn get_string(self) -> String { self.buf }
 
-    fn get_unique_name(&mut self, name: impl Into<String>) -> String {
-        let mut name = name.into();
-        if let Some(i) = self.names.get_mut(&name) {
+    fn get_unique_name(&mut self, val: &Value, hint: Option<impl Into<String>>) -> String {
+        if let Some(name) = self.names.get(val) {
+            return name.clone();
+        }
+        let hint: Option<String> = hint.map(|x| x.into());
+        let mut name = hint.unwrap_or("".to_string());
+        
+        if let Some(i) = self.hints.get_mut(&name) {
             name.push_str(&format!("{}", i));
             *i += 1;
         } else {
-            self.names.insert(name.clone(), 1);
+            self.hints.insert(name.clone(), 1);
             name.push_str("0");
         }
+        self.names.insert(val.clone(), name.clone());
         name
     }
 }
@@ -331,7 +317,7 @@ fn printer_visitor(max_lines: usize) -> CachedVisitor<PrinterState> {
         .add_visitor(move |state: &mut S, v: &dyn Visitor<S>, op: &Op| {
             let return_list = op.outputs().into_iter().map(|x| {
                 let name = x.name().unwrap_or_else(|| { op.name().to_string().to_lowercase() });
-                let unique_name = state.get_unique_name(name);
+                let unique_name = state.get_unique_name(x, Some(name));
                 format!("%{}: {}", unique_name, type_repr(x.type_of()))
             }).collect::<Vec<_>>();
             state.newline();
@@ -346,12 +332,28 @@ fn printer_visitor(max_lines: usize) -> CachedVisitor<PrinterState> {
                     state.push_token(" = ");
                 }
             }
+            let op_name = if op.internal_as_any().type_id() == TypeId::of::<ir::ElementWiseOp>() {
+                let op = op.internal_as_any().downcast_ref::<ir::ElementWiseOp>().unwrap();
+                match &op.name {
+                    ir::ElementwiseFnOption::Intrinsic(op) => {
+                        format!("Elementwise{:?}", op)
+                    }
+                    ir::ElementwiseFnOption::Extern(name, _eltype) => {
+                        name.clone()
+                    }
+                }
+            } else if op.internal_as_any().type_id() == TypeId::of::<ir::ReduceOp>() {
+                let op = op.internal_as_any().downcast_ref::<ir::ReduceOp>().unwrap();
+                format!("Reduce{:?}", op.op)
+            } else {
+                op.name().to_string()
+            };
 
-            state.push_token(op.name());
+            state.push_token(&op_name);
             state.push_token("(");
             let arg_list = op.inputs().into_iter().map(|x| {
                 let name = x.name().unwrap_or_else(|| { op.name().to_string().to_lowercase() });
-                let unique_name = state.get_unique_name(name);
+                let unique_name = state.get_unique_name(x, Some(name));
                 format!("%{}", unique_name)
             }).collect::<Vec<_>>();
             state.arg_list(arg_list.into_iter(), max_lines);
@@ -365,7 +367,7 @@ fn printer_visitor(max_lines: usize) -> CachedVisitor<PrinterState> {
                     state.push_token("|");
                     let arg_list = block.args.iter().map(|x| {
                         let name = x.name().unwrap_or_default();
-                        let unique_name = state.get_unique_name(name);
+                        let unique_name = state.get_unique_name(x, Some(name));
                         format!("%{}: {}", unique_name, type_repr(x.type_of()))
                     }).collect::<Vec<_>>();
                     state.arg_list(arg_list.into_iter(), max_lines);
@@ -426,9 +428,118 @@ fn check_program_correctness_visitor() -> SequentialVisitor<CorrectnessState> {
         }))
 }
 
+struct RewriterState {
+    remap_value: HashMap<Value, Value>,
+    ops: Vec<Vec<Op>>,
+}
+
+impl RewriterState {
+    pub fn new() -> Self {
+        RewriterState {
+            remap_value: HashMap::new(),
+            ops: vec![vec![]],
+        }
+    }
+
+    pub fn build_block(&mut self, args: Vec<Value>, f: impl FnOnce(&mut Self, &Vec<Value>)) -> Block {
+        self.ops.push(vec![]);
+        f(self, &args);
+        let ops = self.ops.pop().unwrap();
+        Block::new(args, ops)
+    }
+
+    pub fn push_op(&mut self, op: Op) {
+        self.ops.last_mut().unwrap().push(op);
+    }
+
+    pub fn remap(&self, val: &Value) -> Option<&Value> {
+        self.remap_value.get(val)
+    }
+
+    pub fn rewrite_op(&mut self, op: &Op) -> Op {
+        let new_inputs = op.inputs().iter().map(|x| {
+            self.remap(x).unwrap_or(x).clone()
+        }).collect::<Vec<_>>();
+        let new_outputs = op.outputs().iter().map(|x| {
+            self.remap(x).unwrap_or(x).clone()
+        }).collect::<Vec<_>>();
+        let new_blocks = op.blocks().iter().map(|x| {
+            self.rewrite_block(x)
+        }).collect::<Vec<_>>();
+        if new_inputs.iter().zip(op.inputs().iter()).all(|(a, b)| a == *b) 
+        && new_outputs.iter().zip(op.outputs().iter()).all(|(a, b)| a == *b) 
+        && new_blocks.iter().collect::<Vec<_>>() == op.blocks() {
+            op.clone()
+        } else {
+            let op_enum = match op.get_inner() {
+                ir::OpEnum::ProgramID(_) => ir::OpEnum::ProgramID(ir::ProgramIDOp { output: new_outputs[0].clone() }),
+                ir::OpEnum::Load(_) => ir::OpEnum::Load(ir::LoadOp { ptr: new_inputs[0].clone(), mask: new_inputs.get(1).cloned(), value: new_inputs.get(2).cloned(), output: new_outputs[0].clone() }),
+                ir::OpEnum::Store(_) => ir::OpEnum::Store(ir::StoreOp::build(&new_inputs[0], &new_inputs[1], new_inputs.get(2)).unwrap()),
+                ir::OpEnum::Expand(op) => ir::OpEnum::Expand(ir::ExpandOp::build(&new_inputs[0], op.dim as i32).unwrap()),
+                ir::OpEnum::Broadcast(_) => ir::OpEnum::Broadcast(ir::BroadcastOp { input: new_inputs[0].clone(), output: new_outputs[0].clone() }),
+                ir::OpEnum::Reduce(_) => ir::OpEnum::Reduce(todo!()),
+                ir::OpEnum::ElementWise(_) => ir::OpEnum::ElementWise(todo!()),
+                ir::OpEnum::Dot(_) => ir::OpEnum::Dot(todo!()),
+                ir::OpEnum::Full(_) => ir::OpEnum::Full(todo!()),
+                ir::OpEnum::Constant(_) => ir::OpEnum::Constant(todo!()),
+                ir::OpEnum::Arange(_) => ir::OpEnum::Arange(todo!()),
+                ir::OpEnum::For(_) => ir::OpEnum::For(todo!()),
+                ir::OpEnum::SCFFOR(_) => ir::OpEnum::SCFFOR(todo!()),
+                ir::OpEnum::FunctionOp(_) => ir::OpEnum::FunctionOp(todo!()),
+                ir::OpEnum::Assign(_) => ir::OpEnum::Assign(todo!()),
+            };
+            Op::new(op_enum, op.location().clone())
+        }
+    }
+
+    pub fn rewrite_block(&mut self, block: &Block) -> Block {
+        let new_args = block.args.iter().map(|x| {
+            self.remap(x).unwrap_or(x).clone()
+        }).collect::<Vec<_>>();
+        let new_ops = block.body.iter().map(|x| {
+            self.rewrite_op(x)
+        }).collect::<Vec<_>>();
+        if new_args == block.args && new_ops == block.body {
+            block.clone()
+        } else {
+            Block::new(new_args, new_ops)
+        }
+    }
+}
 
 
-fn encoding_visitor() -> CachedVisitor<EncodingState> {
+fn convert_to_pure_for() -> impl Visitor<RewriterState> {
+    CachedVisitor::new()
+    .add_typed_visitor(|v, s, op: &ir::ForOp| {
+
+        Ok(())
+    })
+}
+
+
+pub enum Encoding {
+    Shared(SharedEncoding),
+    Local(BlockEncoding),
+}
+
+pub struct SharedEncoding {
+    shape: Vec<u32>,
+}
+pub struct BlockEncoding {
+    shape: Vec<u32>,
+    thread: Vec<u32>,
+    warp: Vec<u32>,
+    block: Vec<u32>,
+}
+
+pub struct EncodingState {
+    encodings: HashMap<Value, Encoding>,
+    num_blocks: u32,
+    num_warps: u32,
+}
+
+
+fn encoding_visitor() -> impl Visitor<EncodingState> {
     CachedVisitor::new()
     .add_typed_visitor(|state: &mut EncodingState, _, op: &ir::ArangeOp| {
         state.encodings.insert(op.output.clone(), Encoding::Shared(SharedEncoding {

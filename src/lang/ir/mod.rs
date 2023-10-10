@@ -138,6 +138,30 @@ impl ElType {
             ElType::Val(dtype) => dtype,
         }
     }
+
+    pub fn i32() -> Self {
+        ElType::Val(Dtype::I32)
+    }
+
+    pub fn f32() -> Self {
+        ElType::Val(Dtype::F32)
+    }
+
+    pub fn bool() -> Self {
+        ElType::Val(Dtype::I1)
+    }
+
+    pub fn ptr_i32() -> Self {
+        ElType::Ptr(Dtype::I32)
+    }
+
+    pub fn ptr_f32() -> Self {
+        ElType::Ptr(Dtype::F32)
+    }
+
+    pub fn ptr_bool() -> Self {
+        ElType::Ptr(Dtype::I1)
+    }
 }
 
 #[derive(Clone, PartialEq, Eq, Debug)]
@@ -320,8 +344,20 @@ impl Op {
         self.0.op.internal_as_any()
     }
 
+    pub fn isa<T: 'static>(&self) -> bool {
+        self.internal_as_any().is::<T>()
+    }
+
+    pub fn downcast_ref<T: 'static>(&self) -> Option<&T> {
+        self.internal_as_any().downcast_ref::<T>()
+    }
+
     pub fn name(&self) -> &str {
         self.0.op.name()
+    }
+
+    pub fn get_inner(&self) -> &OpEnum {
+        &self.0.op
     }
 }
 
@@ -413,8 +449,8 @@ pub enum OpEnum { // could be a trait, once we have a better idea of the functio
     Load(LoadOp),
     Store(StoreOp),
 
-    Reshape(ReshapeOp),
-    Permute(PermuteOp),
+    // Reshape(ReshapeOp),
+    // Permute(PermuteOp),
     // Slice(SliceOp),
     Expand(ExpandOp),
     Broadcast(BroadcastOp),
@@ -424,10 +460,12 @@ pub enum OpEnum { // could be a trait, once we have a better idea of the functio
     Dot(DotOp),
 
     Full(FullOp),
+    Constant(ConstantOp),
     Arange(ArangeOp),
 
     For(ForOp),
-    If(IfOp),
+    SCFFOR(SCFForOp),
+    // If(IfOp),
     FunctionOp(FunctionOp),
     Assign(AssignOp),
 }
@@ -454,8 +492,8 @@ impl OpEnum {
                 }
                 inputs
             }
-            Self::Reshape(op) => vec![&op.input],
-            Self::Permute(op) => vec![&op.input],
+            // Self::Reshape(op) => vec![&op.input],
+            // Self::Permute(op) => vec![&op.input],
             // Self::Slice(op) => vec![&op.input],
             Self::Expand(op) => vec![&op.input],
             Self::Broadcast(op) => vec![&op.input],
@@ -463,9 +501,11 @@ impl OpEnum {
             Self::ElementWise(op) => op.args.iter().collect(),
             Self::Dot(op) => vec![&op.a, &op.b],
             Self::Full(_op) => vec![],
+            Self::Constant(_op) => vec![],
             Self::Arange(_op) => vec![],
             Self::For(op) => vec![&op.start, &op.end, &op.step],
-            Self::If(op) => vec![&op.cond],
+            Self::SCFFOR(op) => vec![&op.start, &op.end, &op.step].into_iter().chain(op.carries.iter()).collect(),
+            // Self::If(op) => vec![&op.cond],
             Self::FunctionOp(_op) => vec![],
             Self::Assign(op) => vec![&op.lhs, &op.rhs],
         }
@@ -476,8 +516,8 @@ impl OpEnum {
             Self::ProgramID(op) => {vec![&op.output]},
             Self::Load(op) => vec![&op.output],
             Self::Store(_op) => vec![],
-            Self::Reshape(op) => vec![&op.output],
-            Self::Permute(op) => vec![&op.output],
+            // Self::Reshape(op) => vec![&op.output],
+            // Self::Permute(op) => vec![&op.output],
             // Self::Slice(op) => vec![&op.output],
             Self::Expand(op) => vec![&op.output],
             Self::Broadcast(op) => vec![&op.output],
@@ -485,9 +525,11 @@ impl OpEnum {
             Self::ElementWise(op) => vec![&op.output],
             Self::Dot(op) => vec![&op.output],
             Self::Full(op) => vec![&op.output],
+            Self::Constant(op) => vec![&op.output],
             Self::Arange(op) => vec![&op.output],
             Self::For(_op) => vec![],
-            Self::If(_op) => vec![],
+            Self::SCFFOR(op) => op.redefines.iter().collect(),
+            // Self::If(_op) => vec![],
             Self::FunctionOp(_op) => vec![],
             Self::Assign(_op) => vec![],
         }
@@ -495,8 +537,9 @@ impl OpEnum {
 
     pub fn blocks(&self) -> Vec<&Block> {
         match &self {
-            Self::If(op) => {vec![&op.then, &op.else_]},
+            // Self::If(op) => {vec![&op.then, &op.else_]},
             Self::For(op) => {vec![&op.body]},
+            Self::SCFFOR(op) => {vec![&op.body]},
             Self::FunctionOp(op) => {vec![&op.body]},
             _ => vec![],
         }
@@ -507,8 +550,8 @@ impl OpEnum {
             Self::ProgramID(x) => x,
             Self::Load(x) => x,
             Self::Store(x) => x,
-            Self::Reshape(x) => x,
-            Self::Permute(x) => x,
+            // Self::Reshape(x) => x,
+            // Self::Permute(x) => x,
             // Self::Slice(x) => x,
             Self::Expand(x) => x,
             Self::Broadcast(x) => x,
@@ -516,9 +559,11 @@ impl OpEnum {
             Self::ElementWise(x) => x,
             Self::Dot(x) => x,
             Self::Full(x) => x,
+            Self::Constant(x) => x,
             Self::Arange(x) => x,
             Self::For(x) => x,
-            Self::If(x) => x,
+            Self::SCFFOR(x) => x,
+            // Self::If(x) => x,
             Self::FunctionOp(x) => x,
             Self::Assign(x) => x,
         }
@@ -529,8 +574,8 @@ impl OpEnum {
             Self::ProgramID(_) => "ProgramID",
             Self::Load(_) => "Load",
             Self::Store(_) => "Store",
-            Self::Reshape(_) => "Reshape",
-            Self::Permute(_) => "Permute",
+            // Self::Reshape(_) => "Reshape",
+            // Self::Permute(_) => "Permute",
             // Self::Slice(_) => "Slice",
             Self::Expand(_) => "Expand",
             Self::Broadcast(_) => "Broadcast",
@@ -538,9 +583,11 @@ impl OpEnum {
             Self::ElementWise(_) => "ElementWise",
             Self::Dot(_) => "Dot",
             Self::Full(_) => "Full",
+            Self::Constant(_) => "Constant",
             Self::Arange(_) => "Arange",
             Self::For(_) => "For",
-            Self::If(_) => "If",
+            Self::SCFFOR(_) => "SCFFOR",
+            // Self::If(_) => "If",
             Self::FunctionOp(_) => "FunctionOp",
             Self::Assign(_) => "Assign",
         }
@@ -561,6 +608,17 @@ pub struct ForOp {
     pub end: Value,
     pub step: Value,
     pub body: Block,
+}
+
+#[derive(Debug, Clone)]
+pub struct SCFForOp {
+    pub induction_var: Value,
+    pub start: Value,
+    pub end: Value,
+    pub step: Value,
+    pub body: Block,
+    pub carries: Vec<Value>,
+    pub redefines: Vec<Value>,
 }
 
 #[derive(Debug, Clone)]
@@ -981,7 +1039,7 @@ impl IntrinsicElementwise {
             )));
         }
         let a = vals[0].type_of();
-        if vals.iter().map(|x| x.type_of().shape() == a.shape()).all(|x| x) {
+        if !vals.iter().all(|x| x.type_of().shape() == a.shape()) {
             return Err(Error::msg(format!(
                 "Intrinsic {:?} requires all operands to have the same shape, got {:?}",
                 self, vals.iter().map(|x| x.type_of()).collect::<Vec<_>>()
@@ -1173,6 +1231,24 @@ impl FullOp {
         let ctype = Type::tensor(ElType::Val(c.dtype()), shape);
         let val = Value::new(ctype);
         FullOp {
+            const_value: c,
+            output: val.clone(),
+        }
+    }
+}
+
+#[derive(Debug, Clone)]
+pub struct ConstantOp {
+    pub const_value: Constant,
+    pub output: Value,
+}
+
+impl ConstantOp {
+    pub fn build(value: impl Into<Constant>) -> Self {
+        let c: Constant = value.into();
+        let ctype = Type::scalar(ElType::Val(c.dtype()));
+        let val = Value::new(ctype);
+        ConstantOp {
             const_value: c,
             output: val.clone(),
         }

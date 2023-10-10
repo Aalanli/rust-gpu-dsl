@@ -38,7 +38,7 @@ impl<'a, 'b> From<&'b std::panic::Location<'a>> for Location {
 }
 
 mod language {
-    use super::ir::{self, Value, OpEnum, Op, ctx_pop_block, ctx_push, ctx_push_block};
+    use super::ir::{self, Value, OpEnum, Op, ctx_pop_block, ctx_push, ctx_push_block, Constant};
 
     pub fn build_fn<const N: usize>(name: &str, args: [ir::ElType; N], scope: impl FnOnce([Value; N])) -> ir::FunctionOp {
         let args = args.map(|x| {
@@ -50,6 +50,18 @@ mod language {
         let body = ctx_pop_block();
         let body = ir::Block::new(args.into_iter().collect(), body);
         ir::FunctionOp { name: name.to_string(), body }
+    }
+
+    pub fn build_for(start: &Value, end: &Value, step: &Value, scope: impl FnOnce(&Value)) {
+        let loc = std::panic::Location::caller();
+        let ind_var = Value::new(ir::Type::scalar(ir::ElType::Val(ir::Dtype::I32)));
+        ctx_push_block();
+        scope(&ind_var);
+        let body = ctx_pop_block();
+        let for_op = ir::ForOp { 
+            induction_var: ind_var.clone(), start: start.clone(), end: end.clone(), step: step.clone(), body: ir::Block::new(vec![ind_var.clone()], body) };
+        let op = Op::new(OpEnum::For(for_op), loc.into());
+        ctx_push(&op);
     }
 
     pub fn program_id() -> Value {
@@ -72,20 +84,26 @@ mod language {
         let op = Op::new(OpEnum::Store(ir::StoreOp::build(ptr, value, mask).unwrap()), loc.into());
         ctx_push(&op);
     }
-    
-    pub fn reshape(input: &Value, shape: &[i32]) -> Value {
+
+    pub fn assign(lhs: &Value, rhs: &Value) {
         let loc = std::panic::Location::caller();
-        let op = Op::new(OpEnum::Reshape(ir::ReshapeOp::build(input, shape).unwrap()), loc.into());
+        let op = Op::new(OpEnum::Assign(ir::AssignOp { lhs: lhs.clone(), rhs: rhs.clone() }), loc.into());
         ctx_push(&op);
-        op.outputs()[0].clone()
     }
     
-    pub fn permute(input: &Value, axes: &[u32]) -> Value {
-        let loc = std::panic::Location::caller();
-        let op = Op::new(OpEnum::Permute(ir::PermuteOp::build(input, axes).unwrap()), loc.into());
-        ctx_push(&op);
-        op.outputs()[0].clone()
-    }
+    // pub fn reshape(input: &Value, shape: &[i32]) -> Value {
+    //     let loc = std::panic::Location::caller();
+    //     let op = Op::new(OpEnum::Reshape(ir::ReshapeOp::build(input, shape).unwrap()), loc.into());
+    //     ctx_push(&op);
+    //     op.outputs()[0].clone()
+    // }
+    
+    // pub fn permute(input: &Value, axes: &[u32]) -> Value {
+    //     let loc = std::panic::Location::caller();
+    //     let op = Op::new(OpEnum::Permute(ir::PermuteOp::build(input, axes).unwrap()), loc.into());
+    //     ctx_push(&op);
+    //     op.outputs()[0].clone()
+    // }
     
     pub fn expand_dims(input: &Value, dim: i32) -> Value {
         let loc = std::panic::Location::caller();
@@ -97,6 +115,20 @@ mod language {
     pub fn reduce(input: &Value, dim: i32, op: ir::ReduceOpOption) -> Value {
         let loc = std::panic::Location::caller();
         let op = Op::new(OpEnum::Reduce(ir::ReduceOp::build(input, dim, op).unwrap()), loc.into());
+        ctx_push(&op);
+        op.outputs()[0].clone()
+    }
+
+    pub fn sum(input: &Value, dim: i32) -> Value {
+        let loc = std::panic::Location::caller();
+        let op = Op::new(OpEnum::Reduce(ir::ReduceOp::build(input, dim, ir::ReduceOpOption::Sum).unwrap()), loc.into());
+        ctx_push(&op);
+        op.outputs()[0].clone()
+    }
+
+    pub fn max(input: &Value, dim: i32) -> Value {
+        let loc = std::panic::Location::caller();
+        let op = Op::new(OpEnum::Reduce(ir::ReduceOp::build(input, dim, ir::ReduceOpOption::Max).unwrap()), loc.into());
         ctx_push(&op);
         op.outputs()[0].clone()
     }
@@ -148,10 +180,9 @@ mod language {
     elementwise_def!(div, Div);
     elementwise_def!(rem, Rem);
     elementwise_def!(pow, Pow);
-    elementwise_def!(exp, Exp);
     elementwise_def!(eq, Eq);
-    elementwise_def!(min, Min);
-    elementwise_def!(max, Max);
+    elementwise_def!(minimum, Min);
+    elementwise_def!(maximum, Max);
     elementwise_def!(lt, Lt);
     elementwise_def!(le, Le);
     elementwise_def!(gt, Gt);
@@ -161,9 +192,27 @@ mod language {
     elementwise_def!(xor, Xor);
     elementwise_def!(not, Not);
     
+    pub fn exp(a: &Value) -> Value {
+        elementwise(&[&a], ir::IntrinsicElementwise::Exp, Some(std::panic::Location::caller()))
+    }
+
     pub fn arange(size: i32) -> Value {
         let loc = std::panic::Location::caller();
         let op = Op::new(OpEnum::Arange(ir::ArangeOp::build(0, size).unwrap()), loc.into());
+        ctx_push(&op);
+        op.outputs()[0].clone()
+    }
+
+    pub fn full(shape: &[usize], value: f32) -> Value {
+        let loc = std::panic::Location::caller();
+        let op = Op::new(OpEnum::Full(ir::FullOp::build(value, shape)), loc.into());
+        ctx_push(&op);
+        op.outputs()[0].clone()
+    }
+
+    pub fn constant(value: impl Into<Constant>) -> Value {
+        let loc = std::panic::Location::caller();
+        let op = Op::new(OpEnum::Constant(ir::ConstantOp::build(value)), loc.into());
         ctx_push(&op);
         op.outputs()[0].clone()
     }
