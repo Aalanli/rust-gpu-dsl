@@ -1,8 +1,10 @@
 use anyhow::{Error, Result};
 use std::cell::RefCell;
+use std::fmt::Display;
 use std::hash::{Hash, Hasher};
 use std::ops::{Deref, Range};
 use std::rc::Rc;
+use std::collections::HashMap;
 use super::Location;
 
 /// Type has value semantics, and are equal if they have the same data
@@ -211,66 +213,132 @@ impl From<bool> for Constant {
 }
 
 
-#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
-pub struct OpId(usize);
+#[derive(Clone, Debug, PartialEq, Eq, Hash)]
+pub struct OpId {
+    generation: usize,
+    module_id: usize
+}
 
-#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
-pub struct BlockId(usize);
+#[derive(Clone, Debug, PartialEq, Eq, Hash)]
+pub struct BlockId {
+    generation: usize,
+    module_id: usize,
+}
 
-#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
-pub struct ValueId(usize);
+#[derive(Clone, Debug, PartialEq, Eq, Hash)]
+pub struct ValueId {
+    generation: usize,
+    module_id: usize
+}
 
-
-pub struct IRModule {
+pub struct Printer {
 
 }
 
+impl Printer {
+    pub fn new() -> Self { todo!() }
+    pub fn line(&mut self, f: impl FnOnce(&mut Self)) { todo!() }
+    pub fn indent(&mut self, f: impl FnOnce(&mut Self)) { todo!() }
+
+    pub fn token(&mut self, token: impl Into<String>) { 
+        let token: String = token.into();
+        assert!(self.is_token(&token), "Token must not contain newlines");
+        todo!()
+    }
+    pub fn tokenlist(&mut self, tokens: impl IntoIterator<Item=impl Into<String>>) { todo!() }
+
+    pub fn is_token(&mut self, token: &str) -> bool { 
+        token.chars().all(|c: char| c != '\n')
+    }
+}
+
+pub trait Attribute: Display + 'static {
+    fn as_any(&self) -> &dyn std::any::Any;
+}
+
+impl<T: Display + 'static> Attribute for T {
+    fn as_any(&self) -> &dyn std::any::Any {
+        self
+    }
+}
+
+pub struct IRModule {
+    value_ty: HashMap<ValueId, Type>,
+    value_source: HashMap<ValueId, OpId>,
+
+    ops: HashMap<OpId, OperationBase>,
+    blocks: HashMap<BlockId, BlockBase>,
+
+    val_attr: HashMap<ValueId, Box<dyn Attribute>>,
+    op_attr: HashMap<OpId, Box<dyn Attribute>>,
+}
+
+struct OperationBase {
+    op: Operations,
+    operands: Vec<ValueId>,
+    returns: Vec<ValueId>,
+    blocks: Vec<BlockId>,
+    parent: Option<BlockId>,
+    location: Location,
+}
+
+struct BlockBase {
+    args: Vec<ValueId>,
+    ops: Vec<OpId>,
+    parent: Option<OpId>,
+}
+
 impl IRModule {
-    pub fn operands(&self, op: OpId) -> &[ValueId] { todo!() }
-    pub fn returns(&self, op: OpId) ->  &[ValueId] { todo!() }
-    pub fn blocks(&self, op: OpId) ->   &[BlockId] { todo!() }
-    pub fn parent(&self, op: OpId) ->   Option<BlockId> { todo!() }
-    pub fn op_type(&self, op: OpId) -> &Operations { todo!() }
-    pub fn op_location(&self, op: OpId) -> &Location { todo!() }
+    pub fn operands(&self, op: &OpId) -> &[ValueId] { todo!() }
+    pub fn returns(&self, op: &OpId) ->  &[ValueId] { todo!() }
+    pub fn blocks(&self, op: &OpId) ->   &[BlockId] { todo!() }
+    pub fn parent(&self, op: &OpId) ->   Option<&BlockId> { todo!() }
+    pub fn op_type(&self, op: &OpId) -> &Operations { todo!() }
+    pub fn op_location(&self, op: &OpId) -> &Location { todo!() }
     pub fn op_attr<T: 'static>(&self) -> Option<&T> { todo!() }
 
-    pub fn block_args(&self, block: BlockId) -> &[ValueId] { todo!() }
-    pub fn block_ops(&self, block: BlockId) -> &[OpId] { todo!() }
-    pub fn block_parent(&self, block: BlockId) -> Option<OpId> { todo!() }
+    pub fn block_args(&self, block: &BlockId) -> &[ValueId] { todo!() }
+    pub fn block_ops(&self, block: &BlockId) -> &[OpId] { todo!() }
+    pub fn block_parent(&self, block: &BlockId) -> Option<&OpId> { todo!() }
 
-    pub fn value_type(&self, value: ValueId) -> &Type { todo!() }
-    pub fn value_source(&self, value: ValueId) -> OpId { todo!() }
+    pub fn value_type(&self, value: &ValueId) -> &Type { todo!() }
+    pub fn value_source(&self, value: &ValueId) -> &OpId { todo!() }
     pub fn value_users(&self) -> &[OpId] { todo!() }
     pub fn value_attr<T: 'static>(&self) -> Option<&T> { todo!() }
 
-    pub fn build_op(&mut self, op_ty: Operations, args: &[ValueId], returns: &[ValueId], blocks: &[BlockId]) -> OpId { todo!() }
-    pub fn build_block(&mut self, args: &[ValueId], ops: &[OpId]) -> BlockId { todo!() }
+    pub fn build_op(&mut self, op_ty: Operations, args: &[ValueId], returns: &[ValueId], blocks: &[BlockId]) -> &OpId { todo!() }
+    pub fn build_block(&mut self, args: &[ValueId], ops: &[OpId]) -> &BlockId { todo!() }
     pub fn build_value(&mut self, ty: Type) -> ValueId { todo!() }
 
-    pub fn set_op_operand(&mut self, op: OpId, idx: usize, value: ValueId) { todo!() }
-    pub fn set_op_return(&mut self, op: OpId, idx: usize, value: ValueId) { todo!() }
-    pub fn set_op_block(&mut self, op: OpId, idx: usize, value: BlockId) { todo!() }
-    pub fn set_op_operands(&mut self, op: OpId, values: &[ValueId]) { todo!() }
-    pub fn set_op_returns(&mut self, op: OpId, values: &[ValueId]) { todo!() }
-    pub fn set_op_blocks(&mut self, op: OpId, blocks: &[BlockId]) { todo!() }
+    pub fn set_op_operand(&mut self, op: &OpId, idx: usize, value: &ValueId) { todo!() }
+    pub fn set_op_return(&mut self, op: &OpId, idx: usize, value: &ValueId) { todo!() }
+    pub fn set_op_block(&mut self, op: &OpId, idx: usize, value: &BlockId) { todo!() }
+    pub fn set_op_operands(&mut self, op: &OpId, values: &[ValueId]) { todo!() }
+    pub fn set_op_returns(&mut self, op: &OpId, values: &[ValueId]) { todo!() }
+    pub fn set_op_blocks(&mut self, op: &OpId, blocks: &[BlockId]) { todo!() }
 
-    pub fn set_block_arg(&mut self, block: BlockId, idx: usize, value: ValueId) { todo!() }
-    pub fn set_block_args(&mut self, block: BlockId, values: &[ValueId]) { todo!() }
-    pub fn set_block_ops(&mut self, block: BlockId, ops: &[OpId]) { todo!() }
+    pub fn set_block_arg(&mut self, block: &BlockId, idx: usize, value: &ValueId) { todo!() }
+    pub fn set_block_args(&mut self, block: &BlockId, values: &[ValueId]) { todo!() }
+    pub fn set_block_ops(&mut self, block: &BlockId, ops: &[OpId]) { todo!() }
 
-    pub fn replace_op(&mut self, op: OpId, new_op: OpId) { todo!() }
+    pub fn replace_op(&mut self, op: &OpId, new_op: &OpId) { todo!() }
 
-    pub fn set_op_attr<T: 'static>(&mut self, op: OpId, attr: T) { todo!() }
-    pub fn set_value_attr<T: 'static>(&mut self, value: ValueId, attr: T) { todo!() }
+    pub fn set_op_attr<T: 'static>(&mut self, op: &OpId, attr: T) { todo!() }
+    pub fn set_value_attr<T: 'static>(&mut self, value: &ValueId, attr: T) { todo!() }
+
+    pub fn root_ops(&self) -> &[OpId] { todo!() }
 }
 
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
 pub enum Operations {
+    Function,
+
     ProgramId,
     Load,
     Store,
 
+    Const,
     Arange,
     ExpandDim,
     Broadcast,
@@ -280,9 +348,11 @@ pub enum Operations {
     Dot,
 
     For,
+    Assign,
     SCFFor,
 }
 
+pub use Operations::*;
 
 
 #[derive(Clone, Debug)]

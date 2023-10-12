@@ -6,6 +6,8 @@ use std::marker::PhantomData;
 use anyhow::{Result, Error};
 use crate::lang::ir::{self, Value, Op, Block};
 
+use super::ir::IRModule;
+
 pub trait Visitor<S> {
     fn visit(&self, visitor: &dyn Visitor<S>, state: &mut S, op: &Op) -> Result<()>;
     fn should_visit(&self, op: &Op) -> bool;
@@ -547,4 +549,55 @@ fn encoding_visitor() -> impl Visitor<EncodingState> {
         }));
         Ok(())
     })
+}
+
+/// top-down, outside-in
+fn walk_preorder(irm: &mut IRModule, mut f: impl FnMut(&mut IRModule, ir::OpId)) {
+    let mut queue = Vec::from_iter(irm.root_ops().iter().rev().cloned());
+    while let Some(op) = queue.pop() {
+        f(irm, op);
+        for block in irm.blocks(&op).iter().rev() {
+            for op in irm.block_ops(block).iter().rev() {
+                queue.push(*op);
+            }
+        }
+    }
+}
+
+/// bottom-up, inside-out
+fn walK_postorder(irm: &mut IRModule, mut f: impl FnMut(&mut IRModule, ir::OpId)) {
+    let mut queue = Vec::from_iter(irm.root_ops().iter().cloned());
+    let mut expanded = vec![];
+    while let Some(op) = queue.pop() {
+        let has_inner = irm.blocks(&op).len() > 0 && irm.block_ops(&irm.blocks(&op)[0]).len() > 0;
+        if has_inner {
+            queue.push(op);
+            expanded.push(op);
+        }
+        for block in irm.blocks(op).iter() {
+            for op in irm.block_ops(*block).iter() {
+                queue.push(*op);
+            }
+        }
+
+        if !has_inner {
+            f(irm, op);
+        } else if expanded.last().map_or(false, |x| *x == op) {
+            f(irm, op);
+            expanded.pop();
+        }
+    }
+}
+
+fn canoncalize_for(irm: &mut IRModule) {
+    walK_postorder(irm, |irm, op_id| {
+        // we assume that all inner fors are canoncalized
+        if *irm.op_type(op_id) == ir::For {
+            assert!(irm.blocks(op_id).len() == 1);
+            let block = irm.blocks(op_id)[0];
+            let assign_ops = irm.block_ops(block).iter()
+                .filter(|x| *irm.op_type(**x) == ir::Assign).cloned().collect::<Vec<_>>();
+            
+        }
+    });
 }
