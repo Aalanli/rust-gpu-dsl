@@ -303,11 +303,11 @@ impl IRModule {
 
     pub fn value_type(&self, value: &ValueId) -> &Type { todo!() }
     pub fn value_source(&self, value: &ValueId) -> &OpId { todo!() }
-    pub fn value_users(&self) -> &[OpId] { todo!() }
+    pub fn value_users(&self, value: &ValueId) -> &[OpId] { todo!() }
     pub fn value_attr<T: 'static>(&self) -> Option<&T> { todo!() }
 
-    pub fn build_op(&mut self, op_ty: Operations, args: &[ValueId], returns: &[ValueId], blocks: &[BlockId]) -> &OpId { todo!() }
-    pub fn build_block(&mut self, args: &[ValueId], ops: &[OpId]) -> &BlockId { todo!() }
+    pub fn build_op(&mut self, op_ty: Operations, args: impl IntoIterator<Item = ValueId>, returns: impl IntoIterator<Item = ValueId>, blocks: impl IntoIterator<Item = BlockId>) -> &OpId { todo!() }
+    pub fn build_block(&mut self, args: impl IntoIterator<Item = ValueId>, ops: impl IntoIterator<Item = OpId>) -> &BlockId { todo!() }
     pub fn build_value(&mut self, ty: Type) -> ValueId { todo!() }
 
     pub fn set_op_operand(&mut self, op: &OpId, idx: usize, value: &ValueId) { todo!() }
@@ -318,8 +318,9 @@ impl IRModule {
     pub fn set_op_blocks(&mut self, op: &OpId, blocks: &[BlockId]) { todo!() }
 
     pub fn set_block_arg(&mut self, block: &BlockId, idx: usize, value: &ValueId) { todo!() }
-    pub fn set_block_args(&mut self, block: &BlockId, values: &[ValueId]) { todo!() }
-    pub fn set_block_ops(&mut self, block: &BlockId, ops: &[OpId]) { todo!() }
+    pub fn set_block_args(&mut self, block: &BlockId, values: impl IntoIterator<Item = ValueId>) { todo!() }
+    pub fn set_block_ops(&mut self, block: &BlockId, ops: impl IntoIterator<Item = OpId>) { todo!() }
+    pub fn insert_block_op(&mut self, block: &BlockId, idx: usize, op: &OpId) { todo!() }
 
     pub fn replace_op(&mut self, op: &OpId, new_op: &OpId) { todo!() }
 
@@ -350,6 +351,7 @@ pub enum Operations {
     For,
     Assign,
     SCFFor,
+    SCFYield
 }
 
 pub use Operations::*;
