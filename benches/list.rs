@@ -1,62 +1,148 @@
 use criterion::{black_box, criterion_group, criterion_main, Criterion};
 
-use rand;
+use rand::{self, Rng, distributions::{Uniform, Distribution}};
 use rust_gpu_dsl::utils::DoubleList;
+
+#[derive(PartialEq, Eq)]
 enum ListInst {
     GoForward,
     GoBackward,
+    GoFront,
+    GoBack,
     InsertAfter,
     InsertBefore,
-    PushStack,
-    PopStack,
-    Remove,
-    GetFront,
-    GetBack,
+    PushFront,
+    PushBack,
+    RemoveGoF,
+    RemoveGoB,
+}
+
+// move inst: 0..4, insert inst: 4..8, remove inst: 8..10
+fn int_to_inst(i: u8) -> ListInst {
+    match i {
+        0 => GoForward,
+        1 => GoBackward,
+        2 => GoFront,
+        3 => GoBack,
+        4 => InsertAfter,
+        5 => InsertBefore,
+        6 => PushFront,
+        7 => PushBack,
+        8 => RemoveGoF,
+        _ => RemoveGoB,
+    }
 }
 
 use ListInst::*;
 
-fn make_inst() -> Vec<ListInst> {
-    let mut inst = vec![];
-    
-    inst
+fn make_inst(n: usize, remove_prob: f64, pos_shift_prob: f64, insert_prob: f64) -> Vec<ListInst> {
+    let mut insts = vec![];
+    let mut len = 0;
+    let mut cur_pos = 0;
+    let mut init_key = false;
+    let mut rng = rand::thread_rng();
+    let die = Uniform::from(0.0..=1.0);
+    while insts.len() < n {
+        if len <= 0 {
+            insts.push(PushFront);
+            len += 1;
+            init_key = false;
+            continue;
+        }
+        if !init_key {
+            insts.push(GoFront);
+            cur_pos = 0;
+            init_key = true;
+            continue;
+        }
+        if cur_pos > len || cur_pos <= 0 {
+            init_key = false;
+            continue;
+        }
+
+        let cat = die.sample(&mut rng);
+        let i: u8 = if cat < remove_prob {
+            rng.gen_range(8..10)
+        } else if cat < remove_prob + pos_shift_prob {
+            rng.gen_range(0..4)
+        } else {
+            rng.gen_range(4..8)
+        };
+        
+        let inst = int_to_inst(i);
+
+        if (inst == GoForward || inst == RemoveGoF) && cur_pos == len - 1 {
+            continue;
+        }
+        if (inst == GoBackward || inst == RemoveGoB) && cur_pos == 0 {
+            continue;
+        }
+
+        match inst {
+            GoForward => { cur_pos += 1; },
+            GoBackward => { cur_pos -= 1; }
+            GoFront => { cur_pos = 0; }
+            GoBack => { cur_pos = len - 1; }
+            InsertAfter => { len += 1; }
+            InsertBefore => { cur_pos += 1; len += 1; }
+            RemoveGoF  => { len -= 1; }
+            RemoveGoB => { cur_pos -= 1; len -= 1; }
+            PushFront => { cur_pos += 1; len += 1; }
+            PushBack => { len += 1; }
+        }
+        insts.push(inst);
+
+    }
+
+    insts
 }
 
 
 fn simulate_inst<T: Default, L: DoubleList<T>>(list: &mut L, instructions: &[ListInst]) {
-    let mut key_stack: Vec<L::Key> = vec![];
+    let mut key: Option<L::Key> = None;
     for inst in instructions {
         match inst {
             GoForward => {
-                let key = key_stack.pop().unwrap();
-                let next = list.next(&key);
-                key_stack.push(next.unwrap());
+                let Some(old_key) = &key else { continue; };
+                let Some(next) = list.next(&old_key) else { continue; };
+                key = Some(next);
             }
             GoBackward => {
-                let key = key_stack.pop().unwrap();
-                let next = list.prev(&key);
-                key_stack.push(next.unwrap());
+                let Some(old_key) = &key else { continue; };
+                let Some(next) = list.prev(&old_key) else { continue; };
+                key = Some(next);
             }
             InsertAfter => {
-                list.insert_after(key_stack.last().unwrap(), T::default());
+                let Some(key) = &key else { continue; };
+                list.insert_after(key, T::default());
             }
             InsertBefore => {
-                list.insert_before(key_stack.last().unwrap(), T::default());
+                let Some(key) = &key else { continue; };
+                list.insert_before(key, T::default());
             }
-            PushStack => {
-                key_stack.push(key_stack.last().unwrap().clone());   
+            RemoveGoF => {
+                let Some(old_key) = &key else { continue; };
+                let new_key = list.next(old_key);
+                list.remove(old_key);
+                key = new_key;
             }
-            PopStack => {
-                key_stack.pop();
+            RemoveGoB => {
+                let Some(old_key) = &key else { continue; };
+                let new_key = list.prev(old_key);
+                list.remove(old_key);
+                key = new_key;
             }
-            Remove => {
-                list.remove(&key_stack.pop().unwrap());
+            PushFront => {
+                list.push_front(T::default());
             }
-            GetFront => {
-                key_stack.push(list.front().unwrap());
+            PushBack => {
+                list.push_back(T::default());
             }
-            GetBack => {
-                key_stack.push(list.back().unwrap());
+            GoFront => {
+                key = list.front();
+            }
+            GoBack => {
+                key = list.back();
             }
         }
     }
