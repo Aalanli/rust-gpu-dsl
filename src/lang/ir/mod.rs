@@ -2,9 +2,9 @@ use anyhow::{Error, Result};
 use std::cell::RefCell;
 use std::fmt::Display;
 use std::hash::{Hash, Hasher};
-use std::ops::{Deref, Range};
+use std::ops::{Deref, Range, RangeBounds};
 use std::rc::Rc;
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 use super::Location;
 
 /// Type has value semantics, and are equal if they have the same data
@@ -216,7 +216,7 @@ impl From<bool> for Constant {
 #[derive(Clone, Debug, PartialEq, Eq, Hash)]
 pub struct OpId {
     generation: usize,
-    module_id: usize
+    module_id: usize,
 }
 
 #[derive(Clone, Debug, PartialEq, Eq, Hash)]
@@ -228,7 +228,7 @@ pub struct BlockId {
 #[derive(Clone, Debug, PartialEq, Eq, Hash)]
 pub struct ValueId {
     generation: usize,
-    module_id: usize
+    module_id: usize,
 }
 
 pub struct Printer {
@@ -262,15 +262,25 @@ impl<T: Display + 'static> Attribute for T {
     }
 }
 
-pub struct IRModule {
-    value_ty: HashMap<ValueId, Type>,
-    value_source: HashMap<ValueId, OpId>,
 
+use rand::Rng;
+
+#[derive(Clone, Debug, PartialEq, Eq, Hash)]
+pub struct User {
+    pub op: OpId,
+    pub idx: usize,
+}
+
+pub struct IRModule {
+    globals: Vec<OpId>,
+    values: HashMap<ValueId, ValueBase>,
     ops: HashMap<OpId, OperationBase>,
     blocks: HashMap<BlockId, BlockBase>,
 
-    val_attr: HashMap<ValueId, Box<dyn Attribute>>,
-    op_attr: HashMap<OpId, Box<dyn Attribute>>,
+    // val_attr: HashMap<ValueId, Box<dyn Attribute>>,
+    // op_attr: HashMap<OpId, Box<dyn Attribute>>,
+    module_id: usize,
+    generation: usize,
 }
 
 struct OperationBase {
@@ -279,7 +289,6 @@ struct OperationBase {
     returns: Vec<ValueId>,
     blocks: Vec<BlockId>,
     parent: Option<BlockId>,
-    location: Location,
 }
 
 struct BlockBase {
@@ -288,27 +297,193 @@ struct BlockBase {
     parent: Option<OpId>,
 }
 
+struct ValueBase {
+    ty: Type,
+    source: ValueSource,
+    // users: Vec<User>,
+}
+
+pub enum ValueSource {
+    Op(OpId),
+    BlockArg(BlockId)
+}
+
 impl IRModule {
-    pub fn operands(&self, op: &OpId) -> &[ValueId] { todo!() }
-    pub fn returns(&self, op: &OpId) ->  &[ValueId] { todo!() }
-    pub fn blocks(&self, op: &OpId) ->   &[BlockId] { todo!() }
-    pub fn parent(&self, op: &OpId) ->   Option<&BlockId> { todo!() }
-    pub fn op_type(&self, op: &OpId) -> &Operations { todo!() }
-    pub fn op_location(&self, op: &OpId) -> &Location { todo!() }
-    pub fn op_attr<T: 'static>(&self) -> Option<&T> { todo!() }
+    pub fn root_ops(&self) -> &[OpId] { &self.globals }
 
-    pub fn block_args(&self, block: &BlockId) -> &[ValueId] { todo!() }
-    pub fn block_ops(&self, block: &BlockId) -> &[OpId] { todo!() }
-    pub fn block_parent(&self, block: &BlockId) -> Option<&OpId> { todo!() }
+    pub fn verify_basic_ir(&self) -> Result<()> { 
+        fn verify_helper_block(irm: &IRModule, parent: &Option<OpId>, cur_block: &BlockId, visible_vals: HashSet<ValueId>) -> Result<()> {
+            Ok(())
+        }
+        fn verify_helper_op(irm: &IRModule, parent: &Option<BlockId>, cur_op: &OpId, visible_vals: HashSet<ValueId>) -> Result<()> {
+            if let Some(op) = irm.ops.get(cur_op) {
+                if &op.parent != parent { return Err(Error::msg(format!("Op {:?} has incorrect parent", cur_op))); }
+                for oper in op.operands.iter() {
+                    if !visible_vals.contains(oper) { return Err(Error::msg(format!("Op {:?} has operand {:?} not in scope", cur_op, oper))); }
+                }
+                for ret in op.returns.iter() {
+                    if visible_vals.contains(ret) { return Err(Error::msg(format!("Op {:?} has return {:?} already in scope", cur_op, ret))); }
+                }
+            } else {
+                return Err(Error::msg(format!("Op {:?} not found", cur_op)));
+            }
+            Ok(())
+        } 
+        Ok(())
+    }
+    pub fn operands(&self, op: &OpId) -> &[ValueId] { 
+        if let Some(x) = self.ops.get(op) {
+            &x.operands
+        } else {
+            panic!("Op {:?} not found", op)
+        }    
+    }
+    pub fn returns(&self, op: &OpId) ->  &[ValueId] { 
+        if let Some(x) = self.ops.get(op) {
+            &x.returns
+        } else {
+            panic!("Op {:?} not found", op)
+        }
+    }
+    pub fn blocks(&self, op: &OpId) ->   &[BlockId] { 
+        if let Some(x) = self.ops.get(op) {
+            &x.blocks
+        } else {
+            panic!("Op {:?} not found", op)
+        }
+    }
+    pub fn parent(&self, op: &OpId) ->   Option<&BlockId> { 
+        if let Some(x) = self.ops.get(op) {
+            x.parent.as_ref()
+        } else {
+            panic!("Op {:?} not found", op)
+        }
+    }
+    pub fn op_type(&self, op: &OpId) -> &Operations { 
+        if let Some(x) = self.ops.get(op) {
+            &x.op
+        } else {
+            panic!("Op {:?} not found", op)
+        }
+    }
+    // pub fn op_attr<T: 'static>(&self) -> Option<&T> { todo!() }
 
-    pub fn value_type(&self, value: &ValueId) -> &Type { todo!() }
-    pub fn value_source(&self, value: &ValueId) -> &OpId { todo!() }
-    pub fn value_users(&self, value: &ValueId) -> &[OpId] { todo!() }
-    pub fn value_attr<T: 'static>(&self) -> Option<&T> { todo!() }
+    pub fn block_args(&self, block: &BlockId) -> &[ValueId] { 
+        if let Some(x) = self.blocks.get(block) {
+            &x.args
+        } else {
+            panic!("Block {:?} not found", block)
+        }
+    }
+    pub fn block_ops(&self, block: &BlockId) -> &[OpId] { 
+        if let Some(x) = self.blocks.get(block) {
+            &x.ops
+        } else {
+            panic!("Block {:?} not found", block)
+        }
+    }
+    pub fn block_parent(&self, block: &BlockId) -> Option<&OpId> { 
+        if let Some(x) = self.blocks.get(block) {
+            x.parent.as_ref()
+        } else {
+            panic!("Block {:?} not found", block)
+        }
+    }
 
-    pub fn build_op(&mut self, op_ty: Operations, args: impl IntoIterator<Item = ValueId>, returns: impl IntoIterator<Item = ValueId>, blocks: impl IntoIterator<Item = BlockId>) -> &OpId { todo!() }
-    pub fn build_block(&mut self, args: impl IntoIterator<Item = ValueId>, ops: impl IntoIterator<Item = OpId>) -> &BlockId { todo!() }
-    pub fn build_value(&mut self, ty: Type) -> ValueId { todo!() }
+    pub fn value_type(&self, value: &ValueId) -> &Type { 
+        if let Some(x) = self.values.get(value) {
+            &x.ty
+        } else {
+            panic!("Value {:?} not found", value)
+        }
+    }
+    pub fn value_source(&self, value: &ValueId) -> &ValueSource { 
+        if let Some(x) = self.values.get(value) {
+            &x.source
+        } else {
+            panic!("Value {:?} not found", value)
+        }
+    }
+    // pub fn value_users(&self, value: &ValueId) -> &[User] { 
+    //     if let Some(x) = self.values.get(value) {
+    //         &x.users
+    //     } else {
+    //         panic!("Value {:?} not found", value)
+    //     }
+    // }
+    // pub fn value_attr<T: 'static>(&self) -> Option<&T> { todo!() }
+
+    pub fn build_op(
+        &mut self, op_ty: Operations, 
+        args: impl IntoIterator<Item = ValueId>, 
+        returns: impl IntoIterator<Item = ValueId>, 
+        blocks: impl IntoIterator<Item = BlockId>
+    ) -> OpId { 
+        let args = args.into_iter().collect();
+        let returns = returns.into_iter().collect();
+        let blocks = blocks.into_iter().collect();
+        let op = OperationBase {
+            op: op_ty,
+            operands: args,
+            returns,
+            blocks,
+            parent: None,
+        };
+        let op_id = OpId { generation: self.generation, module_id: self.module_id };
+        self.ops.insert(op_id.clone(), op);
+
+        self.generation += 1;
+        op_id
+    }
+    pub fn replace_op(&mut self, op: &OpId, new_op: &OpId) { 
+        if op == new_op { return; }
+        let Some(old_op) = self.ops.remove(op) else { panic!("Op {:?} not found", op); };
+
+        for val in old_op.returns.iter() {
+            self.values.remove(val);
+        }
+        if let Some(parent) = &old_op.parent {
+            let parent = self.blocks.get_mut(parent).unwrap();
+            let idx = parent.ops.iter().position(|x| x == op).unwrap();
+            parent.ops[idx] = new_op.clone();
+        } else {
+            let idx = self.globals.iter().position(|x| x == op).unwrap();
+            self.globals[idx] = new_op.clone();
+        }
+        let Some(new_op_) = self.ops.get_mut(new_op) else { panic!("Op {:?} not found", new_op); };
+        for ret in new_op_.returns.iter() {
+            let val = self.values.get_mut(ret).unwrap();
+            val.source = ValueSource::Op(new_op.clone());
+        }
+        new_op_.parent = old_op.parent;
+    }
+    pub fn build_block(
+        &mut self, 
+        args: impl IntoIterator<Item = ValueId>, 
+        ops: impl IntoIterator<Item = OpId>
+    ) -> BlockId { 
+        let args = args.into_iter().collect();
+        let ops = ops.into_iter().collect();
+        let block = BlockBase {
+            args,
+            ops,
+            parent: None,
+        };
+        let block_id = BlockId { generation: self.generation, module_id: self.module_id };
+        self.generation += 1;
+        self.blocks.insert(block_id.clone(), block);
+        block_id
+    }
+    pub fn build_value(&mut self, ty: Type) -> ValueId { 
+        let val = ValueBase {
+            ty,
+            source: ValueSource::Op(OpId { generation: self.generation, module_id: self.module_id }),
+        };
+        let val_id = ValueId { generation: self.generation, module_id: self.module_id };
+        self.generation += 1;
+        self.values.insert(val_id.clone(), val);
+        val_id
+    }
 
     pub fn set_op_operand(&mut self, op: &OpId, idx: usize, value: &ValueId) { todo!() }
     pub fn set_op_return(&mut self, op: &OpId, idx: usize, value: &ValueId) { todo!() }
@@ -321,13 +496,18 @@ impl IRModule {
     pub fn set_block_args(&mut self, block: &BlockId, values: impl IntoIterator<Item = ValueId>) { todo!() }
     pub fn set_block_ops(&mut self, block: &BlockId, ops: impl IntoIterator<Item = OpId>) { todo!() }
     pub fn insert_block_op(&mut self, block: &BlockId, idx: usize, op: &OpId) { todo!() }
+    pub fn splice_block_op<R, I>(&mut self, block: &BlockId, range: R, ops: I) 
+    where
+        R: RangeBounds<usize>,
+        I: IntoIterator<Item = OpId>
+    {
+        todo!()
+    }
 
-    pub fn replace_op(&mut self, op: &OpId, new_op: &OpId) { todo!() }
 
     pub fn set_op_attr<T: 'static>(&mut self, op: &OpId, attr: T) { todo!() }
     pub fn set_value_attr<T: 'static>(&mut self, value: &ValueId, attr: T) { todo!() }
 
-    pub fn root_ops(&self) -> &[OpId] { todo!() }
 }
 
 

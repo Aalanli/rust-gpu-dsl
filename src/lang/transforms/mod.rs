@@ -677,37 +677,28 @@ fn canoncalize_for(irm: &mut IRModule) {
                 let returns = yields.iter().map(|x| irm.build_value(irm.value_type(x).clone())).collect::<Vec<_>>();
 
                 let block_arg_to_global = remap_to_block_arg.iter().map(|(k, v)| (v, k)).collect::<HashMap<_, _>>();
-                let remap_to_return = block_args[1..].iter().zip(returns.iter())
+                let new_assigns = block_args[1..].iter().zip(returns.iter())
                     .map(|(block_arg, return_val)| {
-                        (block_arg_to_global[block_arg].clone(), return_val.clone())
-                    }).collect::<HashMap<_, _>>();
+                        irm.build_op(ir::Assign, [block_arg_to_global[block_arg].clone(), return_val.clone()], [], [])
+                    }).collect::<Vec<_>>();
 
                 // get original operands, start, end, step
                 let mut operands = irm.operands(op_id).to_vec();
                 // non-locals are now op operands
                 block_args[1..].iter().for_each(|x| operands.push(block_arg_to_global[x].clone()));
 
-                let yield_op = irm.build_op(ir::SCFYield, yields, [], []).clone();
+                let yield_op = irm.build_op(ir::SCFYield, yields, [], []);
                 irm.insert_block_op(&block, irm.block_ops(&block).len(), &yield_op);
                 irm.set_block_args(&block, block_args);
                 
-                let scffor = irm.build_op(ir::SCFFor, operands.clone(), returns, [block.clone()]).clone();
+                let scffor = irm.build_op(ir::SCFFor, operands.clone(), returns, [block.clone()]);
                 // eliminates all inner uses of non-local values
                 irm.replace_op(op_id, &scffor);
                 
-                // replace all uses later with new scf for return values
-                for oper in operands {
-                    let use_idx = irm.value_users(&oper).iter().position(|x| x == &scffor).unwrap();
-                    for i in use_idx..irm.value_users(&oper).len() {
-                        let user = irm.value_users(&oper)[i].clone();
-                        for j in 0..irm.operands(&user).len() {
-                            let operand = irm.operands(&user)[j].clone();
-                            if operand == oper {
-                                irm.set_op_operand(&user, j, &remap_to_return[&oper]);
-                            }
-                        }
-                    }
-                }
+                let parent_block = irm.parent(&scffor).expect("for loop has no parent block").clone();
+                let idx = irm.block_ops(&parent_block).iter().position(|x| x == &scffor).unwrap() + 1;
+                irm.splice_block_op(&parent_block, idx..idx+1, new_assigns);
+
             }
 
             // 2. remove assign ops
