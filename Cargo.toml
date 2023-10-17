@@ -24,3 +24,7 @@ harness = false
 [[bench]]
 name = "trait_reg"
 harness = false
+
+[[bench]]
+name = "list"
+harness = false

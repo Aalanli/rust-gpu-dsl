@@ -11,8 +11,8 @@ pub trait DoubleList<T> {
     fn push_front(&mut self, item: T) -> Self::Key;
     fn push_back(&mut self, item: T) -> Self::Key;
 
-    fn prev(&self, key: &Self::Key) -> Option<&Self::Key>;
-    fn next(&self, key: &Self::Key) -> Option<&Self::Key>;
+    fn prev(&self, key: &Self::Key) -> Option<Self::Key>;
+    fn next(&self, key: &Self::Key) -> Option<Self::Key>;
 
     fn get(&self, key: &Self::Key) -> Option<&T>;
     fn get_mut(&mut self, key: &Self::Key) -> Option<&mut T>;
