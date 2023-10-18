@@ -1,9 +1,9 @@
 use criterion::{black_box, criterion_group, criterion_main, Criterion};
 
 use rand::{self, Rng, distributions::{Uniform, Distribution}};
-use rust_gpu_dsl::utils::DoubleList;
+use rust_gpu_dsl::utils::{self as utils, DoubleList};
 
-#[derive(PartialEq, Eq)]
+#[derive(PartialEq, Eq, Debug)]
 enum ListInst {
     GoForward,
     GoBackward,
@@ -103,31 +103,31 @@ fn simulate_inst<T: Default, L: DoubleList<T>>(list: &mut L, instructions: &[Lis
     for inst in instructions {
         match inst {
             GoForward => {
-                let Some(old_key) = &key else { continue; };
-                let Some(next) = list.next(&old_key) else { continue; };
+                let Some(old_key) = &key else { panic!("invalid execution"); };
+                let Some(next) = list.next(&old_key) else { panic!("invalid execution"); };
                 key = Some(next);
             }
             GoBackward => {
-                let Some(old_key) = &key else { continue; };
-                let Some(next) = list.prev(&old_key) else { continue; };
+                let Some(old_key) = &key else { panic!("invalid execution"); };
+                let Some(next) = list.prev(&old_key) else { panic!("invalid execution"); };
                 key = Some(next);
             }
             InsertAfter => {
-                let Some(key) = &key else { continue; };
+                let Some(key) = &key else { panic!("invalid execution"); };
                 list.insert_after(key, T::default());
             }
             InsertBefore => {
-                let Some(key) = &key else { continue; };
+                let Some(key) = &key else { panic!("invalid execution"); };
                 list.insert_before(key, T::default());
             }
             RemoveGoF => {
-                let Some(old_key) = &key else { continue; };
+                let Some(old_key) = &key else { panic!("invalid execution"); };
                 let new_key = list.next(old_key);
                 list.remove(old_key);
                 key = new_key;
             }
             RemoveGoB => {
-                let Some(old_key) = &key else { continue; };
+                let Some(old_key) = &key else { panic!("invalid execution"); };
                 let new_key = list.prev(old_key);
                 list.remove(old_key);
                 key = new_key;
@@ -149,83 +149,21 @@ fn simulate_inst<T: Default, L: DoubleList<T>>(list: &mut L, instructions: &[Lis
 }
 
 fn criterion_benchmark(c: &mut Criterion) {
-    c.bench_function("boxed_iter", |b| {
+    let inst = make_inst(100000, 1.0 / 3.0, 1.0 / 3.0, 1.0 / 3.0);
+    let inst = black_box(inst);
+    c.bench_function("map_list_i32", |b| {
+        let mut list = utils::MapDoubleList::<i32>::new();
         b.iter(|| {
-            let it: Box<dyn Iterator<Item = i32>> = if black_box(true) {
-                Box::new(
-                    std::iter::empty()
-                        .chain(std::iter::once(black_box(1)))
-                        .chain(std::iter::once(black_box(2)))
-                        .chain(std::iter::once(black_box(3)))
-                        .chain(std::iter::once(black_box(3)))
-                        .chain(std::iter::once(black_box(3)))
-                        .chain(std::iter::once(black_box(3)))
-                        .chain(std::iter::once(black_box(3)))
-                        .chain(std::iter::once(black_box(3))),
-                )
-            } else {
-                Box::new(std::iter::empty().chain(std::iter::once(1)))
-            };
-            let mut s = 0;
-            for i in it {
-                s += i;
-            }
-            s
+            simulate_inst(&mut list, &inst);
+            list.clear();
         })
     });
 
-    c.bench_function("vector_boxed_iter", |b| {
+    c.bench_function("map_list_i128", |b| {
+        let mut list = utils::MapDoubleList::<i128>::new();
         b.iter(|| {
-            let it: Box<dyn Iterator<Item = i32>> = if black_box(true) {
-                Box::new(
-                    // std::iter::empty()
-                    //     .chain(std::iter::once(black_box(1)))
-                    //     .chain(std::iter::once(black_box(2)))
-                    //     .chain(std::iter::once(black_box(3)))
-                    vec![
-                        black_box(1),
-                        black_box(2),
-                        black_box(3),
-                        black_box(3),
-                        black_box(3),
-                        black_box(3),
-                        black_box(3),
-                        black_box(3),
-                    ]
-                    .into_iter(),
-                )
-            } else {
-                Box::new(std::iter::empty().chain(std::iter::once(1)))
-            };
-            let mut s = 0;
-            for i in it {
-                s += i;
-            }
-            s
-        })
-    });
-
-    c.bench_function("vector_iter", |b| {
-        b.iter(|| {
-            let it: Vec<i32> = if black_box(true) {
-                vec![
-                    black_box(1),
-                    black_box(2),
-                    black_box(3),
-                    black_box(3),
-                    black_box(3),
-                    black_box(3),
-                    black_box(3),
-                    black_box(3),
-                ]
-            } else {
-                vec![black_box(1)]
-            };
-            let mut s = 0;
-            for i in it {
-                s += i;
-            }
-            s
+            simulate_inst(&mut list, &inst);
+            list.clear();
         })
     });
 }
