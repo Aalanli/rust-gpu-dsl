@@ -45,7 +45,7 @@ fn make_inst(n: usize, remove_prob: f64, pos_shift_prob: f64, insert_prob: f64) 
     while insts.len() < n {
         if len <= 0 {
             insts.push(PushFront);
-            len += 1;
+            len = 1;
             init_key = false;
             continue;
         }
@@ -55,12 +55,13 @@ fn make_inst(n: usize, remove_prob: f64, pos_shift_prob: f64, insert_prob: f64) 
             init_key = true;
             continue;
         }
-        if cur_pos > len || cur_pos <= 0 {
+        if cur_pos > len || cur_pos < 0 {
             init_key = false;
             continue;
         }
 
         let cat = die.sample(&mut rng);
+        // println!("{}", cat);
         let i: u8 = if cat < remove_prob {
             rng.gen_range(8..10)
         } else if cat < remove_prob + pos_shift_prob {
@@ -100,34 +101,34 @@ fn make_inst(n: usize, remove_prob: f64, pos_shift_prob: f64, insert_prob: f64) 
 
 fn simulate_inst<T: Default, L: DoubleList<T>>(list: &mut L, instructions: &[ListInst]) {
     let mut key: Option<L::Key> = None;
-    for inst in instructions {
+    for inst in instructions {        
         match inst {
             GoForward => {
-                let Some(old_key) = &key else { panic!("invalid execution"); };
-                let Some(next) = list.next(&old_key) else { panic!("invalid execution"); };
+                let Some(old_key) = &key else { panic!("invalid execution go-forward"); };
+                let Some(next) = list.next(&old_key) else { panic!("invalid execution go-forward-next"); };
                 key = Some(next);
             }
             GoBackward => {
-                let Some(old_key) = &key else { panic!("invalid execution"); };
-                let Some(next) = list.prev(&old_key) else { panic!("invalid execution"); };
+                let Some(old_key) = &key else { panic!("invalid execution go-backward"); };
+                let Some(next) = list.prev(&old_key) else { panic!("invalid execution go-backward-prev"); };
                 key = Some(next);
             }
             InsertAfter => {
-                let Some(key) = &key else { panic!("invalid execution"); };
+                let Some(key) = &key else { panic!("invalid execution insert-after"); };
                 list.insert_after(key, T::default());
             }
             InsertBefore => {
-                let Some(key) = &key else { panic!("invalid execution"); };
+                let Some(key) = &key else { panic!("invalid execution insert-before"); };
                 list.insert_before(key, T::default());
             }
             RemoveGoF => {
-                let Some(old_key) = &key else { panic!("invalid execution"); };
+                let Some(old_key) = &key else { panic!("invalid execution remove-go-f"); };
                 let new_key = list.next(old_key);
                 list.remove(old_key);
                 key = new_key;
             }
             RemoveGoB => {
-                let Some(old_key) = &key else { panic!("invalid execution"); };
+                let Some(old_key) = &key else { panic!("invalid execution remove-go-b"); };
                 let new_key = list.prev(old_key);
                 list.remove(old_key);
                 key = new_key;
@@ -149,7 +150,7 @@ fn simulate_inst<T: Default, L: DoubleList<T>>(list: &mut L, instructions: &[Lis
 }
 
 fn criterion_benchmark(c: &mut Criterion) {
-    let inst = make_inst(100000, 1.0 / 3.0, 1.0 / 3.0, 1.0 / 3.0);
+    let inst = make_inst(1000000, 1.0 / 3.0, 1.0 / 3.0, 1.0 / 3.0);
     let inst = black_box(inst);
     c.bench_function("map_list_i32", |b| {
         let mut list = utils::MapDoubleList::<i32>::new();
@@ -166,7 +167,33 @@ fn criterion_benchmark(c: &mut Criterion) {
             list.clear();
         })
     });
+
+    c.bench_function("vec_list_i32", |b| {
+        let mut list = utils::VecDoubleList::<i32>::new();
+        b.iter(|| {
+            simulate_inst(&mut list, &inst);
+            list.clear();
+        })
+    });
+
+    c.bench_function("vec_list_i128", |b| {
+        let mut list = utils::VecDoubleList::<i128>::new();
+        b.iter(|| {
+            simulate_inst(&mut list, &inst);
+            list.clear();
+        })
+    });
+
+    let mut inst_count = [0i32; 10];
+    for i in inst {
+        inst_count[i as usize] += 1;
+    }
+
+    for i in 0..inst_count.len() {
+        println!("{:?}: {}", int_to_inst(i as u8), inst_count[i]);
+    }
 }
 
 criterion_group!(benches, criterion_benchmark);
 criterion_main!(benches);
+

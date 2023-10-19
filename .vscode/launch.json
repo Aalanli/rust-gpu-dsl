@@ -1,0 +1,140 @@
+{
+    // Use IntelliSense to learn about possible attributes.
+    // Hover to view descriptions of existing attributes.
+    // For more information, visit: https://go.microsoft.com/fwlink/?linkid=830387
+    "version": "0.2.0",
+    "configurations": [
+        {
+            "type": "lldb",
+            "request": "launch",
+            "name": "Debug unit tests in library 'rust-gpu-dsl'",
+            "cargo": {
+                "args": [
+                    "test",
+                    "--no-run",
+                    "--lib",
+                    "--package=rust-gpu-dsl"
+                ],
+                "filter": {
+                    "name": "rust-gpu-dsl",
+                    "kind": "lib"
+                }
+            },
+            "args": [],
+            "cwd": "${workspaceFolder}"
+        },
+        {
+            "type": "lldb",
+            "request": "launch",
+            "name": "Debug executable 'rust-gpu-dsl'",
+            "cargo": {
+                "args": [
+                    "build",
+                    "--bin=rust-gpu-dsl",
+                    "--package=rust-gpu-dsl"
+                ],
+                "filter": {
+                    "name": "rust-gpu-dsl",
+                    "kind": "bin"
+                }
+            },
+            "args": [],
+            "cwd": "${workspaceFolder}"
+        },
+        {
+            "type": "lldb",
+            "request": "launch",
+            "name": "Debug unit tests in executable 'rust-gpu-dsl'",
+            "cargo": {
+                "args": [
+                    "test",
+                    "--no-run",
+                    "--bin=rust-gpu-dsl",
+                    "--package=rust-gpu-dsl"
+                ],
+                "filter": {
+                    "name": "rust-gpu-dsl",
+                    "kind": "bin"
+                }
+            },
+            "args": [],
+            "cwd": "${workspaceFolder}"
+        },
+        {
+            "type": "lldb",
+            "request": "launch",
+            "name": "Debug benchmark 'my_benchmark'",
+            "cargo": {
+                "args": [
+                    "test",
+                    "--no-run",
+                    "--bench=my_benchmark",
+                    "--package=rust-gpu-dsl"
+                ],
+                "filter": {
+                    "name": "my_benchmark",
+                    "kind": "bench"
+                }
+            },
+            "args": [],
+            "cwd": "${workspaceFolder}"
+        },
+        {
+            "type": "lldb",
+            "request": "launch",
+            "name": "Debug benchmark 'atomic'",
+            "cargo": {
+                "args": [
+                    "test",
+                    "--no-run",
+                    "--bench=atomic",
+                    "--package=rust-gpu-dsl"
+                ],
+                "filter": {
+                    "name": "atomic",
+                    "kind": "bench"
+                }
+            },
+            "args": [],
+            "cwd": "${workspaceFolder}"
+        },
+        {
+            "type": "lldb",
+            "request": "launch",
+            "name": "Debug benchmark 'trait_reg'",
+            "cargo": {
+                "args": [
+                    "test",
+                    "--no-run",
+                    "--bench=trait_reg",
+                    "--package=rust-gpu-dsl"
+                ],
+                "filter": {
+                    "name": "trait_reg",
+                    "kind": "bench"
+                }
+            },
+            "args": [],
+            "cwd": "${workspaceFolder}"
+        },
+        {
+            "type": "lldb",
+            "request": "launch",
+            "name": "Debug benchmark 'list'",
+            "cargo": {
+                "args": [
+                    "test",
+                    "--no-run",
+                    "--bench=list",
+                    "--package=rust-gpu-dsl"
+                ],
+                "filter": {
+                    "name": "list",
+                    "kind": "bench"
+                }
+            },
+            "args": [],
+            "cwd": "${workspaceFolder}"
+        }
+    ]
+}
