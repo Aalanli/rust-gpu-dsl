@@ -3,7 +3,7 @@ use criterion::{black_box, criterion_group, criterion_main, Criterion};
 use rand::{self, Rng, distributions::{Uniform, Distribution}};
 use rust_gpu_dsl::utils::{self as utils, DoubleList};
 
-#[derive(PartialEq, Eq, Debug)]
+#[derive(PartialEq, Eq, Debug, Clone, Copy)]
 enum ListInst {
     GoForward,
     GoBackward,
@@ -16,6 +16,7 @@ enum ListInst {
     RemoveGoF,
     RemoveGoB,
 }
+use ListInst::*;
 
 // move inst: 0..4, insert inst: 4..8, remove inst: 8..10
 fn int_to_inst(i: u8) -> ListInst {
@@ -33,9 +34,101 @@ fn int_to_inst(i: u8) -> ListInst {
     }
 }
 
-use ListInst::*;
+fn simulate_inst<T: Default, L: DoubleList<T>>(list: &mut L, instructions: &[ListInst]) {
+    let mut key: Option<L::Key> = None;
+    for inst in instructions {        
+        match inst {
+            GoForward => {
+                let Some(old_key) = &key else { panic!("invalid execution go-forward"); };
+                let Some(next) = list.next(&old_key) else { panic!("invalid execution go-forward-next"); };
+                key = Some(next);
+            }
+            GoBackward => {
+                let Some(old_key) = &key else { panic!("invalid execution go-backward"); };
+                let Some(next) = list.prev(&old_key) else { panic!("invalid execution go-backward-prev"); };
+                key = Some(next);
+            }
+            InsertAfter => {
+                let Some(key) = &key else { panic!("invalid execution insert-after"); };
+                list.insert_after(key, T::default());
+            }
+            InsertBefore => {
+                let Some(key) = &key else { panic!("invalid execution insert-before"); };
+                list.insert_before(key, T::default());
+            }
+            RemoveGoF => {
+                let Some(old_key) = &key else { panic!("invalid execution remove-go-f"); };
+                let new_key = list.next(old_key);
+                list.remove(old_key);
+                key = new_key;
+            }
+            RemoveGoB => {
+                let Some(old_key) = &key else { panic!("invalid execution remove-go-b"); };
+                let new_key = list.prev(old_key);
+                list.remove(old_key);
+                key = new_key;
+            }
+            PushFront => {
+                list.push_front(T::default());
+            }
+            PushBack => {
+                list.push_back(T::default());
+            }
+            GoFront => {
+                key = list.front();
+            }
+            GoBack => {
+                key = list.back();
+            }
+        }
+    }
+}
 
-fn make_inst(n: usize, remove_prob: f64, pos_shift_prob: f64, insert_prob: f64) -> Vec<ListInst> {
+fn bench_inst(c: &mut Criterion, header_name: &str, inst: &[ListInst]) {
+    let inst = black_box(inst);
+    c.bench_function(&format!("{}_map_list_i32", header_name), |b| {
+        let mut list = utils::MapDoubleList::<i32>::new();
+        b.iter(|| {
+            simulate_inst(&mut list, &inst);
+            list.clear();
+        })
+    });
+
+    c.bench_function(&format!("{}_map_list_i128", header_name), |b| {
+        let mut list = utils::MapDoubleList::<i128>::new();
+        b.iter(|| {
+            simulate_inst(&mut list, &inst);
+            list.clear();
+        })
+    });
+
+    c.bench_function(&format!("{}_vec_list_i32", header_name), |b| {
+        let mut list = utils::VecDoubleList::<i32>::new();
+        b.iter(|| {
+            simulate_inst(&mut list, &inst);
+            list.clear();
+        })
+    });
+
+    c.bench_function(&format!("{}_vec_list_i128", header_name), |b| {
+        let mut list = utils::VecDoubleList::<i128>::new();
+        b.iter(|| {
+            simulate_inst(&mut list, &inst);
+            list.clear();
+        })
+    });
+
+    let mut inst_count = [0i32; 10];
+    for i in inst {
+        inst_count[*i as usize] += 1;
+    }
+
+    for i in 0..inst_count.len() {
+        println!("{:?}: {}", int_to_inst(i as u8), inst_count[i]);
+    }
+}
+
+fn make_random_inst(n: usize, remove_prob: f64, pos_shift_prob: f64, insert_prob: f64) -> Vec<ListInst> {
     let mut insts = vec![];
     let mut len = 0;
     let mut cur_pos = 0;
@@ -98,100 +191,68 @@ fn make_inst(n: usize, remove_prob: f64, pos_shift_prob: f64, insert_prob: f64) 
     insts
 }
 
+fn make_move_inst(n: usize, moves: usize) -> Vec<ListInst> {
+    let mut insts = vec![];
+    insts.push(PushFront);
+    insts.push(GoFront);
+    for _ in 0..n {
+        insts.push(InsertAfter);
+    }
 
-fn simulate_inst<T: Default, L: DoubleList<T>>(list: &mut L, instructions: &[ListInst]) {
-    let mut key: Option<L::Key> = None;
-    for inst in instructions {        
-        match inst {
-            GoForward => {
-                let Some(old_key) = &key else { panic!("invalid execution go-forward"); };
-                let Some(next) = list.next(&old_key) else { panic!("invalid execution go-forward-next"); };
-                key = Some(next);
-            }
-            GoBackward => {
-                let Some(old_key) = &key else { panic!("invalid execution go-backward"); };
-                let Some(next) = list.prev(&old_key) else { panic!("invalid execution go-backward-prev"); };
-                key = Some(next);
-            }
-            InsertAfter => {
-                let Some(key) = &key else { panic!("invalid execution insert-after"); };
-                list.insert_after(key, T::default());
-            }
-            InsertBefore => {
-                let Some(key) = &key else { panic!("invalid execution insert-before"); };
-                list.insert_before(key, T::default());
-            }
-            RemoveGoF => {
-                let Some(old_key) = &key else { panic!("invalid execution remove-go-f"); };
-                let new_key = list.next(old_key);
-                list.remove(old_key);
-                key = new_key;
-            }
-            RemoveGoB => {
-                let Some(old_key) = &key else { panic!("invalid execution remove-go-b"); };
-                let new_key = list.prev(old_key);
-                list.remove(old_key);
-                key = new_key;
-            }
-            PushFront => {
-                list.push_front(T::default());
-            }
-            PushBack => {
-                list.push_back(T::default());
-            }
-            GoFront => {
-                key = list.front();
-            }
-            GoBack => {
-                key = list.back();
-            }
+    for _ in 0..moves {
+        for _ in 0..n {
+            insts.push(GoForward);
+        }
+        for _ in 0..n {
+            insts.push(GoBackward);
         }
     }
+    insts
+}
+
+fn make_insert_inst(n: usize) -> Vec<ListInst> {
+    let mut insts = vec![PushFront, GoFront];
+    for _ in 0..n {
+        insts.push(InsertAfter);
+        insts.push(InsertBefore);
+    }
+    insts
+}
+
+fn make_dilated_insert_inst(n: usize, repeat: usize) -> Vec<ListInst> {
+    let mut insts = vec![];
+    insts.push(PushFront);
+    insts.push(GoFront);
+    for _ in 0..repeat {
+        for _ in 0..n { 
+            insts.extend_from_slice(&[
+                InsertAfter,
+                InsertAfter,
+                GoForward,
+                RemoveGoF,
+            ]);
+        }
+        for _ in 0..n {
+            insts.push(RemoveGoB);
+        }
+    }
+
+    insts
 }
 
 fn criterion_benchmark(c: &mut Criterion) {
-    let inst = make_inst(1000000, 1.0 / 3.0, 1.0 / 3.0, 1.0 / 3.0);
-    let inst = black_box(inst);
-    c.bench_function("map_list_i32", |b| {
-        let mut list = utils::MapDoubleList::<i32>::new();
-        b.iter(|| {
-            simulate_inst(&mut list, &inst);
-            list.clear();
-        })
-    });
+    let inst = make_random_inst(1000000, 1.0 / 3.0, 1.0 / 3.0, 1.0 / 3.0);
+    bench_inst(c, "random", &inst);
 
-    c.bench_function("map_list_i128", |b| {
-        let mut list = utils::MapDoubleList::<i128>::new();
-        b.iter(|| {
-            simulate_inst(&mut list, &inst);
-            list.clear();
-        })
-    });
+    let inst = make_move_inst(1000, 10);
+    bench_inst(c, "move", &inst);
 
-    c.bench_function("vec_list_i32", |b| {
-        let mut list = utils::VecDoubleList::<i32>::new();
-        b.iter(|| {
-            simulate_inst(&mut list, &inst);
-            list.clear();
-        })
-    });
+    let inst = make_insert_inst(1000);
+    bench_inst(c, "insert", &inst);
 
-    c.bench_function("vec_list_i128", |b| {
-        let mut list = utils::VecDoubleList::<i128>::new();
-        b.iter(|| {
-            simulate_inst(&mut list, &inst);
-            list.clear();
-        })
-    });
-
-    let mut inst_count = [0i32; 10];
-    for i in inst {
-        inst_count[i as usize] += 1;
-    }
-
-    for i in 0..inst_count.len() {
-        println!("{:?}: {}", int_to_inst(i as u8), inst_count[i]);
-    }
+    let inst = make_dilated_insert_inst(1000, 10);
+    bench_inst(c, "dilated_insert", &inst);
+    
 }
 
 criterion_group!(benches, criterion_benchmark);

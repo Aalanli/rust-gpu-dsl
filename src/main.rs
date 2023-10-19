@@ -100,7 +100,6 @@ fn make_inst(n: usize, remove_prob: f64, pos_shift_prob: f64, insert_prob: f64) 
 }
 
 
-
 fn simulate_inst<T: Default + Display, L: DoubleList<T>>(list: &mut L, instructions: &[ListInst]) where L::Key: Debug {
     let mut key: Option<L::Key> = None;
     for inst in instructions {
