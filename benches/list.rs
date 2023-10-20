@@ -144,7 +144,7 @@ fn bench_inst(c: &mut Criterion, header_name: &str, inst: &[ListInst]) {
     }
 }
 
-fn make_random_inst(n: usize, remove_prob: f64, pos_shift_prob: f64, insert_prob: f64) -> Vec<ListInst> {
+fn make_random_inst(n: usize, remove_prob: f64, pos_shift_prob: f64, _insert_prob: f64) -> Vec<ListInst> {
     let mut insts = vec![];
     let mut len = 0;
     let mut cur_pos = 0;

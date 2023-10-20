@@ -308,6 +308,11 @@ impl<T> VecDoubleList<T> {
     pub fn iter(&self) -> DoubleListRefIter<T, Self> {
         DoubleListRefIter { list: self, key: self.front(), _marker: PhantomData }
     }
+
+    pub fn iter_mut(&mut self) -> DoubleListMutIter<T> {
+        let front = self.front();
+        DoubleListMutIter { iter: self, key: front, }
+    }
 }
 
 impl<T> Drop for VecDoubleList<T> {
@@ -328,6 +333,7 @@ impl<T: Clone> Clone for VecDoubleList<T> {
                     storage.push(GenericListItem { item: self.storage.get_unchecked(i).item.clone(), prev: self.storage.get_unchecked(i).prev, next: self.storage.get_unchecked(i).next });
                 } else {
                     *generation.get_unchecked_mut(i) |= Self::EMPTY_MARKER;
+                    storage.push(GenericListItem { item: std::mem::zeroed(), prev: Self::SENTINEL, next: Self::SENTINEL })
                 }
             }
         }
@@ -396,6 +402,26 @@ impl<T> IntoIterator for VecDoubleList<T> {
     }
 }
 
+pub struct DoubleListMutIter<'a, T> {
+    iter: &'a mut VecDoubleList<T>,
+    key: Option<VecListKey>,
+}
+
+impl<'a, T> Iterator for DoubleListMutIter<'a, T> {
+    type Item = &'a mut T;
+    fn next(&mut self) -> Option<Self::Item> {
+        let key = self.key.as_ref()?;
+        if self.iter.is_valid_key(key) {
+            let idx = key.index;
+            self.key = self.iter.next(key);
+            unsafe {
+                return Some(&mut (*self.iter.storage.as_mut_ptr().add(idx)).item);
+            }
+        }
+        None
+    }
+}
+
 #[test]
 fn test_vec_list() {
     let mut list = VecDoubleList::<usize>::new();
@@ -405,11 +431,16 @@ fn test_vec_list() {
     list.insert_after(&k2, 2);
     let k3 = list.next(&k2).unwrap();
     list.insert_after(&k3, 3);
-    let items = list.iter().collect::<Vec<_>>();
-    println!("{:?}", items);
+    let items = list.iter().cloned().collect::<Vec<_>>();
+    // println!("{:?}", items);
+    assert!(items == vec![0, 1, 2, 3]);
     list.remove(&k2);
-    let items = list.iter().collect::<Vec<_>>();
-    println!("{:?}", items);
+    let items = list.iter().cloned().collect::<Vec<_>>();
+    // println!("{:?}", items);
+    assert!(items == vec![0, 2, 3]);
+    let items2 = list.clone().into_iter().collect::<Vec<_>>();
+    println!("{:?}", items2);
+    assert!(items2 == vec![0, 2, 3]);
     let mut list2 = VecDoubleList::<usize>::new();
     let p1 = list2.push_front(0);
     assert!(list2.is_valid_key(&k2) == false);
