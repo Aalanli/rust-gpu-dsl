@@ -1,8 +1,10 @@
 use std::{hash::Hash, fmt::Display, marker::PhantomData};
 mod map_list;
 mod node_list;
+mod vec_list;
 
-pub use map_list::{MapDoubleList, MapListKey, VecDoubleList, VecListKey};
+pub use map_list::{MapDoubleList, MapListKey, VecDoubleListV1, VecListKeyV1};
+pub use vec_list::{VecDoubleList, VecListKey};
 
 pub trait DoubleList<T> {
     type Key: Clone + Eq + Hash;

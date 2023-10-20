@@ -102,6 +102,22 @@ fn bench_inst(c: &mut Criterion, header_name: &str, inst: &[ListInst]) {
         })
     });
 
+    c.bench_function(&format!("{}_vec_listv1_i32", header_name), |b| {
+        let mut list = utils::VecDoubleListV1::<i32>::new();
+        b.iter(|| {
+            simulate_inst(&mut list, &inst);
+            list.clear();
+        })
+    });
+
+    c.bench_function(&format!("{}_vec_listv1_i128", header_name), |b| {
+        let mut list = utils::VecDoubleListV1::<i128>::new();
+        b.iter(|| {
+            simulate_inst(&mut list, &inst);
+            list.clear();
+        })
+    });
+
     c.bench_function(&format!("{}_vec_list_i32", header_name), |b| {
         let mut list = utils::VecDoubleList::<i32>::new();
         b.iter(|| {

@@ -99,7 +99,6 @@ fn make_inst(n: usize, remove_prob: f64, pos_shift_prob: f64, insert_prob: f64) 
     insts
 }
 
-
 fn simulate_inst<T: Default + Display, L: DoubleList<T>>(list: &mut L, instructions: &[ListInst]) where L::Key: Debug {
     let mut key: Option<L::Key> = None;
     for inst in instructions {
@@ -150,13 +149,13 @@ fn simulate_inst<T: Default + Display, L: DoubleList<T>>(list: &mut L, instructi
             }
         }
         // utils::simple_print_list(list);
-        // println!("{:?}", list);
+        // println!("{:?}", list.iter().collect::<Vec<_>>());
     }
 }
 
 fn main() {
     let n = 100000;
-    let inst = make_inst(n, 0.40, 0.3, 0.8);
+    let inst = make_inst(1000000, 1.0 / 3.0, 1.0 / 3.0, 1.0 / 3.0);
 
     let mut inst_count = [0i32; 10];
     for i in &inst {
@@ -172,7 +171,10 @@ fn main() {
     // println!("{}", inst_count[4..8].iter().sum::<i32>() as f64 / n as f64);
     let mut list = utils::VecDoubleList::<i32>::new();
     simulate_inst(&mut list, &inst);
-    println!("{}", list.len());
-    println!("{}", list.internal_len());
-    println!("{}", list.dropped_len());
+    list.clear();
+    simulate_inst(&mut list, &inst);
+
+    // println!("{}", list.len());
+    // println!("{}", list.internal_len());
+    // println!("{}", list.dropped_len());
 }

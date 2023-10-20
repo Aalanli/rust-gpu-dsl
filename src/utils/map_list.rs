@@ -120,13 +120,13 @@ impl<T> DoubleList<T> for MapDoubleList<T> {
     }
 }
 
-pub struct VecDoubleList<T>(GenericDoubleList<GenericListItem<T>, VecStorage<GenericListItem<T>>>);
+pub struct VecDoubleListV1<T>(GenericDoubleList<GenericListItem<T>, VecStorage<GenericListItem<T>>>);
 #[derive(Clone, PartialEq, Eq, Debug, Hash)]
-pub struct VecListKey(SListKey);
+pub struct VecListKeyV1(SListKey);
 
-impl<T> VecDoubleList<T> {
+impl<T> VecDoubleListV1<T> {
     pub fn new() -> Self {
-        VecDoubleList(GenericDoubleList::new(VecStorage::new()))
+        VecDoubleListV1(GenericDoubleList::new(VecStorage::new()))
     }
 
     pub fn internal_len(&self) -> usize {
@@ -145,57 +145,57 @@ impl<T> VecDoubleList<T> {
         self.0.len()
     }
 
-    pub fn is_valid_key(&self, key: &VecListKey) -> bool {
+    pub fn is_valid_key(&self, key: &VecListKeyV1) -> bool {
         self.0.is_valid_key(&key.0)
     }
 
-    pub fn front(&self) -> Option<VecListKey> {
-        self.0.front().map(|x| VecListKey(x))
+    pub fn front(&self) -> Option<VecListKeyV1> {
+        self.0.front().map(|x| VecListKeyV1(x))
     }
 
-    pub fn back(&self) -> Option<VecListKey> {
-        self.0.back().map(|x| VecListKey(x))
+    pub fn back(&self) -> Option<VecListKeyV1> {
+        self.0.back().map(|x| VecListKeyV1(x))
     }
 
-    pub fn push_front(&mut self, item: T) -> VecListKey {
-        VecListKey(self.0.push_front(item))
+    pub fn push_front(&mut self, item: T) -> VecListKeyV1 {
+        VecListKeyV1(self.0.push_front(item))
     }
 
-    pub fn push_back(&mut self, item: T) -> VecListKey {
-        VecListKey(self.0.push_back(item))
+    pub fn push_back(&mut self, item: T) -> VecListKeyV1 {
+        VecListKeyV1(self.0.push_back(item))
     }
 
-    pub fn prev(&self, key: &VecListKey) -> Option<VecListKey> {
-        self.0.prev(&key.0).map(|x| VecListKey(x))
+    pub fn prev(&self, key: &VecListKeyV1) -> Option<VecListKeyV1> {
+        self.0.prev(&key.0).map(|x| VecListKeyV1(x))
     }
 
-    pub fn next(&self, key: &VecListKey) -> Option<VecListKey> {
-        self.0.next(&key.0).map(|x| VecListKey(x))
+    pub fn next(&self, key: &VecListKeyV1) -> Option<VecListKeyV1> {
+        self.0.next(&key.0).map(|x| VecListKeyV1(x))
     }
 
-    pub fn get(&self, key: &VecListKey) -> Option<&T> {
+    pub fn get(&self, key: &VecListKeyV1) -> Option<&T> {
         self.0.get(&key.0)
     }
 
-    pub fn get_mut(&mut self, key: &VecListKey) -> Option<&mut T> {
+    pub fn get_mut(&mut self, key: &VecListKeyV1) -> Option<&mut T> {
         self.0.get_mut(&key.0)
     }
 
-    pub fn remove(&mut self, key: &VecListKey) -> Option<T> {
+    pub fn remove(&mut self, key: &VecListKeyV1) -> Option<T> {
         self.0.remove(&key.0)
     }
 
-    pub fn insert_before(&mut self, key: &VecListKey, item: T) -> Option<T> {
+    pub fn insert_before(&mut self, key: &VecListKeyV1, item: T) -> Option<T> {
         self.0.insert_before(&key.0, item)
     }
 
-    pub fn insert_after(&mut self, key: &VecListKey, item: T) -> Option<T> {
+    pub fn insert_after(&mut self, key: &VecListKeyV1, item: T) -> Option<T> {
         self.0.insert_after(&key.0, item)
     }
 }
 
-impl<T> DoubleList<T> for VecDoubleList<T> {
-    type Key = VecListKey;
+impl<T> DoubleList<T> for VecDoubleListV1<T> {
+    type Key = VecListKeyV1;
     fn is_valid_key(&self, key: &Self::Key) -> bool {
         self.is_valid_key(key)
     }
