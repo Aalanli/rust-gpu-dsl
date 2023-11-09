@@ -514,437 +514,6 @@ use rand::Rng;
 
 
 
-// pub struct IRModule {
-//     globals: Vec<OpId>,
-//     values: HashMap<ValueId, ValueBase>,
-//     ops: HashMap<usize, OperationBase>,
-//     blocks: HashMap<usize, BlockBase>,
-
-//     value_source: HashMap<ValueId, ValueSource>,
-//     op_parent: HashMap<usize, Option<BlockId>>,
-//     block_parent: HashMap<usize, OpId>,
-
-//     // val_attr: HashMap<ValueId, Box<dyn Attribute>>,
-//     // op_attr: HashMap<OpId, Box<dyn Attribute>>,
-//     module_id: usize,
-//     generation: usize,
-// }
-
-// struct OperationBase {
-//     op: Operations,
-//     operands: Vec<ValueId>,
-//     returns: Vec<ValueId>,
-//     blocks: VecDoubleList<usize>,
-// }
-
-// struct BlockBase {
-//     args: Vec<ValueId>,
-//     ops: VecDoubleList<usize>,
-// }
-
-// struct ValueBase {
-//     ty: Type,
-// }
-
-// pub enum ValueSource {
-//     Op(OpId),
-//     BlockArg(BlockId),
-// }
-
-// impl IRModule {
-//     pub fn root_ops(&self) -> &[OpId] { &self.globals }
-
-//     pub fn is_valid_op_id(&self, op: &OpId) -> bool { self.ops.contains_key(&op.generation) && op.module_id == self.module_id }
-
-//     // whether the op is part of the IR structure
-//     pub fn is_used_op(&self, op: &OpId) -> bool { 
-//         if self.is_valid_op_id(op) {
-//             self.op_parent.contains_key(&op.generation)
-//         } else {
-//             panic!("Op {:?} is not valid", op);
-//         }
-//     }
-
-//     pub fn is_valid_block_id(&self, block: &BlockId) -> bool { self.blocks.contains_key(&block.generation) && block.module_id == self.module_id }
-//     // whether the block is part of the IR structure
-//     pub fn is_used_block(&self, block: &BlockId) -> bool { 
-//         if self.is_valid_block_id(block) {
-//             self.block_parent.contains_key(&block.generation)
-//         } else {
-//             panic!("Block {:?} is not valid", block);
-//         }
-//     }
-
-//     pub fn is_valid_value_id(&self, value: &ValueId) -> bool { self.values.contains_key(value) && value.module_id == self.module_id }
-//     // whether the value is part of the IR structure
-//     pub fn is_used_value(&self, value: &ValueId) -> bool { 
-//         if self.is_valid_value_id(value) {
-//             self.value_source.contains_key(value)
-//         } else {
-//             panic!("Value {:?} is not valid", value);
-//         }
-//     }
-
-//     // pub fn verify_basic_ir(&self) -> Result<()> { 
-//     //     fn verify_helper_block(irm: &IRModule, parent: &Option<OpId>, cur_block: &BlockId, visible_vals: HashSet<ValueId>) -> Result<()> {
-//     //         Ok(())
-//     //     }
-//     //     fn verify_helper_op(irm: &IRModule, parent: &Option<BlockId>, cur_op: &OpId, visible_vals: HashSet<ValueId>) -> Result<()> {
-//     //         if let Some(op) = irm.ops.get(cur_op) {
-//     //             if &op.parent != parent { return Err(Error::msg(format!("Op {:?} has incorrect parent", cur_op))); }
-//     //             for oper in op.operands.iter() {
-//     //                 if !visible_vals.contains(oper) { return Err(Error::msg(format!("Op {:?} has operand {:?} not in scope", cur_op, oper))); }
-//     //             }
-//     //             for ret in op.returns.iter() {
-//     //                 if visible_vals.contains(ret) { return Err(Error::msg(format!("Op {:?} has return {:?} already in scope", cur_op, ret))); }
-//     //             }
-//     //         } else {
-//     //             return Err(Error::msg(format!("Op {:?} not found", cur_op)));
-//     //         }
-//     //         Ok(())
-//     //     } 
-//     //     Ok(())
-//     // }
-//     pub fn operands(&self, op: &OpId) -> &[ValueId] { 
-//         if let Some(x) = self.ops.get(&op.generation) {
-//             &x.operands
-//         } else {
-//             panic!("Op {:?} not found", op)
-//         }    
-//     }
-//     pub fn returns(&self, op: &OpId) ->  &[ValueId] { 
-//         if let Some(x) = self.ops.get(&op.generation) {
-//             &x.returns
-//         } else {
-//             panic!("Op {:?} not found", op)
-//         }
-//     }
-//     pub fn blocks(&self, op: &OpId) -> Option<BlockId> { 
-//         if let Some(x) = self.ops.get(&op.generation) {
-//             let bk = x.blocks.front().as_ref()?;
-//             Some(BlockId { generation: *bk, module_id: self.module_id })
-//         } else {
-//             panic!("Op {:?} not found", op)
-//         }
-//     }
-
-//     pub fn parent(&self, op: &OpId) ->   Option<&BlockId> { 
-//         if let Some(x) = self.op_parent.get(op) {
-//             x.as_ref()
-//         } else {
-//             panic!("Op {:?} not found", op)
-//         }
-//     }
-//     pub fn op_type(&self, op: &OpId) -> &Operations { 
-//         if let Some(x) = self.ops.get(op) {
-//             &x.op
-//         } else {
-//             panic!("Op {:?} not found", op)
-//         }
-//     }
-//     // pub fn op_attr<T: 'static>(&self) -> Option<&T> { todo!() }
-
-//     pub fn block_args(&self, block: &BlockId) -> &[ValueId] { 
-//         if let Some(x) = self.blocks.get(block) {
-//             &x.args
-//         } else {
-//             panic!("Block {:?} not found", block)
-//         }
-//     }
-//     pub fn block_ops(&self, block: &BlockId) -> &VecDoubleList<OpId> { 
-//         if let Some(x) = self.blocks.get(block) {
-//             &x.ops
-//         } else {
-//             panic!("Block {:?} not found", block)
-//         }
-//     }
-//     pub fn block_parent(&self, block: &BlockId) -> &OpId { 
-//         if let Some(x) = self.block_parent.get(block) {
-//             x
-//         } else {
-//             panic!("Block {:?} not found", block)
-//         }
-//     }
-
-//     pub fn value_type(&self, value: &ValueId) -> &Type { 
-//         if let Some(x) = self.values.get(value) {
-//             &x.ty
-//         } else {
-//             panic!("Value {:?} not found", value)
-//         }
-//     }
-//     pub fn value_source(&self, value: &ValueId) -> &ValueSource { 
-//         if let Some(x) = self.value_source.get(value) {
-//             x
-//         } else {
-//             panic!("Value {:?} not found", value)
-//         }
-//     }
-//     // pub fn value_users(&self, value: &ValueId) -> &[User] { 
-//     //     if let Some(x) = self.values.get(value) {
-//     //         &x.users
-//     //     } else {
-//     //         panic!("Value {:?} not found", value)
-//     //     }
-//     // }
-//     // pub fn value_attr<T: 'static>(&self) -> Option<&T> { todo!() }
-
-//     /// Verify that the ValueId's are valid and not already in use
-//     /// This is used for constructing new IR
-//     ///     A ValueId is not in use if it is not part of any Op return or Block arg
-//     ///     This can happen when a ValueId is just constructed or removed
-//     pub fn verify_values_for_construction(&self, ids: &[ValueId]) -> Result<()> {
-//         for id in ids.iter() {
-//             if !self.is_valid_value_id(id) {
-//                 return Err(Error::msg(format!("Invalid ValueId {:?}", id)));
-//             }
-//             if self.is_used_value(id) {
-//                 return Err(Error::msg(format!("Value {:?} already in use", id)));
-//             }
-//         }
-//         Ok(())
-//     }
-
-//     pub fn verify_blocks_for_construction<'a>(&self, blocks: impl Iterator<Item = &'a BlockId>) -> Result<()> {
-//         for block in blocks {
-//             if !self.is_valid_block_id(block) {
-//                 return Err(Error::msg(format!("Invalid BlockId {:?}", block)));
-//             }
-//             if self.is_used_block(block) {
-//                 return Err(Error::msg(format!("Block {:?} already in use", block)));
-//             }
-//         }
-//         Ok(())
-//     }
-
-//     pub fn verify_ops_for_construction<'a>(&self, ops: impl Iterator<Item = &'a OpId>) -> Result<()> {
-//         for op in ops {
-//             if !self.is_valid_op_id(op) {
-//                 return Err(Error::msg(format!("Invalid OpId {:?}", op)));
-//             }
-//             if self.is_used_op(op) {
-//                 return Err(Error::msg(format!("Op {:?} already in use", op)));
-//             }
-//         }
-//         Ok(())
-//     }
-
-//     pub fn build_op(
-//         &mut self, op_ty: Operations, 
-//         args: impl IntoIterator<Item = ValueId>, 
-//         returns: impl IntoIterator<Item = ValueId>, 
-//         blocks: impl IntoIterator<Item = BlockId>
-//     ) -> OpId { 
-//         let op_id = OpId { generation: self.generation, module_id: self.module_id };
-//         let args: Vec<_> = args.into_iter().collect();
-//         for (i, arg) in args.iter().enumerate() {
-//             if !self.is_valid_value_id(arg) {
-//                 panic!("Invalid ValueId {:?} at {i}", arg);
-//             }
-//         }
-//         let returns: Vec<_> = returns.into_iter().collect();
-//         self.verify_values_for_construction(&returns).unwrap();
-//         for i in returns.iter() {
-//             self.value_source.insert(i.clone(), ValueSource::Op(op_id.clone()));
-//         }
-
-//         let blocks: VecDoubleList<_> = blocks.into_iter().collect();
-//         self.verify_blocks_for_construction(blocks.iter()).unwrap();
-//         for i in blocks.iter() {
-//             self.block_parent.insert(i.clone(), op_id.clone());
-//         }
-//         let op = OperationBase {
-//             op: op_ty,
-//             operands: args,
-//             returns,
-//             blocks,
-//         };
-//         self.ops.insert(op_id.clone(), op);
-
-//         self.generation += 1;
-//         op_id
-//     }
-
-//     pub fn build_block(
-//         &mut self, 
-//         args: impl IntoIterator<Item = ValueId>, 
-//         ops: impl IntoIterator<Item = OpId>
-//     ) -> BlockId { 
-//         let args = args.into_iter().collect();
-//         let ops = ops.into_iter().collect();
-//         let block = BlockBase {
-//             args,
-//             ops,
-//         };
-//         self.verify_values_for_construction(&block.args).unwrap();
-//         self.verify_ops_for_construction(block.ops.iter()).unwrap();
-//         let block_id = BlockId { generation: self.generation, module_id: self.module_id };
-//         for i in block.args.iter() {
-//             self.value_source.insert(i.clone(), ValueSource::BlockArg(block_id.clone()));
-//         }
-//         for i in block.ops.iter() {
-//             self.op_parent.insert(i.clone(), Some(block_id.clone()));
-//         }
-        
-//         self.generation += 1;
-//         self.blocks.insert(block_id.clone(), block);
-//         block_id
-//     }
-
-//     pub fn build_value(&mut self, ty: Type) -> ValueId { 
-//         let val = ValueBase {
-//             ty,
-//         };
-//         let val_id = ValueId { generation: self.generation, module_id: self.module_id };
-//         self.generation += 1;
-//         self.values.insert(val_id.clone(), val);
-//         val_id
-//     }
-
-//     pub fn set_op_ty(&mut self, op: &OpId, op_ty: Operations) { 
-//         if let Some(x) = self.ops.get_mut(op) {
-//             x.op = op_ty;
-//         } else {
-//             panic!("Op {:?} not found", op)
-//         }
-//     }
-//     pub fn set_op_operand(&mut self, op: &OpId, idx: usize, value: &ValueId) { 
-//         if let Some(x) = self.ops.get_mut(op) {
-//             x.operands[idx] = value.clone();
-//         } else {
-//             panic!("Op {:?} not found", op)
-//         }    
-//     }
-//     pub fn set_op_return(&mut self, op: &OpId, idx: usize, value: &ValueId) { 
-//         if let Some(x) = self.ops.get_mut(op) {
-//             let returned = &x.returns[idx].clone();
-//             self.value_source.remove(returned);
-//             x.returns[idx] = value.clone();
-//         } else {
-//             panic!("Op {:?} not found", op)
-//         }
-//     }
-    
-//     // pub fn set_op_block(&mut self, op: &OpId, idx: usize, value: &BlockId) { todo!() }
-//     pub fn set_op_operands(&mut self, op: &OpId, values: impl IntoIterator<Item = ValueId>) { 
-//         if let Some(x) = self.ops.get_mut(op) {
-//             x.operands = values.into_iter().collect();
-//         } else {
-//             panic!("Op {:?} not found", op)
-//         }
-//     }
-//     pub fn set_op_returns(&mut self, op: &OpId, values: impl IntoIterator<Item = ValueId>) { 
-//         if let Some(x) = self.ops.get_mut(op) {
-//             for i in x.returns.iter() {
-//                 self.value_source.remove(i);
-//             }
-//             x.returns = values.into_iter().collect();
-//         } else {
-//             panic!("Op {:?} not found", op)
-//         }
-//     }
-//     // pub fn set_op_blocks(&mut self, op: &OpId, blocks: &[BlockId]) { todo!() }
-//     pub fn op_blocks_mut(&mut self, op: &OpId) -> &mut VecDoubleList<BlockId> {
-//         if let Some(x) = self.ops.get_mut(op) {
-//             &mut x.blocks
-//         } else {
-//             panic!("Op {:?} not found", op)
-//         }
-//     }
-    
-//     pub fn set_block_arg(&mut self, block: &BlockId, idx: usize, value: &ValueId) { 
-//         if let Some(x) = self.blocks.get_mut(block) {
-//             self.value_source.remove(&x.args[idx]);
-//             x.args[idx] = value.clone();
-//         } else {
-//             panic!("Block {:?} not found", block)
-//         }
-//     }
-//     pub fn set_block_args(&mut self, block: &BlockId, values: impl IntoIterator<Item = ValueId>) {
-//         if let Some(x) = self.blocks.get_mut(block) {
-//             for i in x.args.iter() {
-//                 self.value_source.remove(i);
-//             }
-//             x.args = values.into_iter().collect();
-//         } else {
-//             panic!("Block {:?} not found", block)
-//         }
-//     }
-//     // pub fn set_block_ops(&mut self, block: &BlockId, ops: impl IntoIterator<Item = OpId>) { todo!() }
-//     pub fn block_ops_mut(&mut self, block: &BlockId) -> &mut VecDoubleList<OpId> {
-//         if let Some(x) = self.blocks.get_mut(block) {
-//             &mut x.ops
-//         } else {
-//             panic!("Block {:?} not found", block)
-//         }
-//     }
-    
-    
-//     pub fn detach_used_value(&mut self, value: &ValueId) {
-//         if let Some(source) = self.value_source.remove(value) {
-//             match source {
-//                 ValueSource::Op(op) => {
-//                     if let Some(op) = self.ops.get_mut(&op) {
-//                         op.returns.retain(|x| x != value);
-//                     } else {
-//                         panic!("Op {:?} not found", op)
-//                     }
-//                 },
-//                 ValueSource::BlockArg(block) => {
-//                     if let Some(block) = self.blocks.get_mut(&block) {
-//                         block.args.retain(|x| x != value);
-//                     } else {
-//                         panic!("Block {:?} not found", block)
-//                     }
-//                 },
-//             }
-//         } else {
-//             panic!("Value {:?} is already detached", value)
-//         }
-//     }
-//     pub fn detach_op(&mut self, op: &OpId) {
-//         if let Some(block) = self.op_parent.remove(op) {
-//             if let Some(block) = block {
-//                 if let Some(block) = self.blocks.get_mut(&block) {
-//                     while let Some(inner_op) = block.ops.front() {
-//                         if op == block.ops.get(&inner_op).unwrap() {
-//                             block.ops.remove(&inner_op);
-//                             break;
-//                         }
-//                     } // should probably check for existence
-//                 } else {
-//                     panic!("Block {:?} not found", block)
-//                 }
-//             } else {
-//                 self.globals.retain(|x| x != op);
-//             }
-//         } else {
-//             panic!("Op {:?} is already detached", op)
-//         }
-//     }
-//     pub fn detach_block(&mut self, block: &BlockId) {
-//         if let Some(parent) = self.block_parent.remove(block) {
-//             if let Some(parent) = self.ops.get_mut(&parent) {
-//                 while let Some(inner_block) = parent.blocks.front() {
-//                     if block == parent.blocks.get(&inner_block).unwrap() {
-//                         parent.blocks.remove(&inner_block);
-//                         break;
-//                     }
-//                 }
-//             } else {
-//                 panic!("Op {:?} not found", parent)
-//             }
-//         } else {
-//             panic!("Block {:?} is already detached", block)
-//         }
-//     }
-
-//     // pub fn set_op_attr<T: 'static>(&mut self, op: &OpId, attr: T) { todo!() }
-//     // pub fn set_value_attr<T: 'static>(&mut self, value: &ValueId, attr: T) { todo!() }
-
-// }
-
-
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
 pub enum Operations {
     Function,
@@ -958,8 +527,8 @@ pub enum Operations {
     ExpandDim,
     Broadcast,
 
-    Reduce,
-    ElementWise,
+    Reduce(IntrinsicElementwise),
+    ElementWise(IntrinsicElementwise),
     Dot,
 
     For,
@@ -971,786 +540,7 @@ pub enum Operations {
 pub use Operations::*;
 
 
-#[derive(Clone, Debug)]
-pub struct Value(Rc<ValueImpl>);
-
-impl Value {
-    pub fn new(type_of: Type) -> Self {
-        Value(Rc::new(ValueImpl {
-            type_of,
-            name_hint: RefCell::new(None),
-        }))
-    }
-
-    pub fn type_of(&self) -> &Type {
-        &self.0.type_of
-    }
-
-    pub fn name_hint(self, name: impl Into<String>) -> Self {
-        self.0.name_hint.replace(Some(name.into()));
-        self
-    }
-
-    pub fn name(&self) -> Option<String> {
-        self.0.name_hint.borrow().clone()
-    }
-
-    pub fn id(&self) -> usize {
-        Rc::as_ptr(&self.0) as usize
-    }
-}
-
-impl PartialEq for Value {
-    fn eq(&self, other: &Self) -> bool {
-        Rc::ptr_eq(&self.0, &other.0)
-    }
-}
-impl Eq for Value {}
-
-impl Hash for Value {
-    fn hash<H: Hasher>(&self, state: &mut H) {
-        Rc::as_ptr(&self.0).hash(state)
-    }
-}
-
-#[derive(Debug)]
-struct ValueImpl {
-    type_of: Type,
-    name_hint: RefCell<Option<String>>,
-}
-
-
-// pub type Op = Rc<Operation>;
-
-#[derive(Debug, Clone)]
-pub struct Op(Rc<Operation>);
-
-#[derive(Debug, Clone)]
-pub struct Block(Rc<BlockImpl>);
-
-impl Block {
-    pub fn new(args: Vec<Value>, body: Vec<Op>) -> Self {
-        Block(Rc::new(BlockImpl { args, body }))
-    }
-
-    pub fn args(&self) -> &[Value] {
-        &self.0.args
-    }
-
-    pub fn body(&self) -> &[Op] {
-        &self.0.body
-    }
-}
-
-impl Deref for Block {
-    type Target = BlockImpl;
-
-    fn deref(&self) -> &Self::Target {
-        &self.0
-    }
-}
-
-impl Hash for Block {
-    fn hash<H: Hasher>(&self, state: &mut H) {
-        Rc::as_ptr(&self.0).hash(state);
-    }
-}
-
-impl PartialEq for Block {
-    fn eq(&self, other: &Self) -> bool {
-        Rc::ptr_eq(&self.0, &other.0)
-    }
-}
-
-impl Eq for Block {}
-
-#[derive(Debug, Clone)]
-pub struct BlockImpl {
-    pub args: Vec<Value>,
-    pub body: Vec<Op>,
-}
-
-
-impl Op {
-    pub fn new(op: OpEnum, location: Location) -> Self {
-        Op(Rc::new(Operation::new(op, location)))
-    }
-
-    pub fn location(&self) -> &Location {
-        &self.0.location
-    }
-
-    pub fn inputs(&self) -> Vec<&Value> {
-        self.0.op.inputs()
-    }
-
-    pub fn outputs(&self) -> Vec<&Value> {
-        self.0.op.outputs()
-    }
-
-    pub fn blocks(&self) -> Vec<&Block> {
-        self.0.op.blocks()
-    }
-
-    pub fn internal_as_any(&self) -> &dyn std::any::Any {
-        self.0.op.internal_as_any()
-    }
-
-    pub fn isa<T: 'static>(&self) -> bool {
-        self.internal_as_any().is::<T>()
-    }
-
-    pub fn downcast_ref<T: 'static>(&self) -> Option<&T> {
-        self.internal_as_any().downcast_ref::<T>()
-    }
-
-    pub fn name(&self) -> &str {
-        self.0.op.name()
-    }
-
-    pub fn get_inner(&self) -> &OpEnum {
-        &self.0.op
-    }
-}
-
-impl Deref for Op {
-    type Target = Operation;
-
-    fn deref(&self) -> &Self::Target {
-        &self.0
-    }
-}
-
-impl Hash for Op {
-    fn hash<H: Hasher>(&self, state: &mut H) {
-        Rc::as_ptr(&self.0).hash(state);
-    }
-}
-
-impl PartialEq for Op {
-    fn eq(&self, other: &Self) -> bool {
-        Rc::ptr_eq(&self.0, &other.0)
-    }
-}
-impl Eq for Op {}
-
-#[derive(Debug)]
-pub struct Operation {
-    location: Location,
-    op: OpEnum,
-}
-
-impl Operation {
-    pub fn new(op: OpEnum, location: Location) -> Self {
-        Operation { op, location }
-    }
-}
-
-struct BuilderCTX {
-    ops: RefCell<Vec<Vec<Op>>>,
-}
-
-impl BuilderCTX {
-    fn new() -> Self {
-        BuilderCTX { ops: RefCell::new(vec![]) }
-    }
-
-    fn new_block(&self) {
-        self.ops.borrow_mut().push(vec![]);
-    }
-
-    fn push(&self, op: Op) {
-        self.ops.borrow_mut().last_mut().unwrap().push(op);
-    }
-
-    fn pop_block(&self) -> Vec<Op> {
-        let bk = self.ops.borrow_mut().pop().unwrap();
-        bk
-    }
-}
-
-thread_local! {
-    static BUILDER_CTX: BuilderCTX = BuilderCTX::new(); 
-}
-
-pub fn ctx_push_block() {
-    BUILDER_CTX.with(|ctx| {
-        ctx.new_block();
-    });
-}
-
-pub fn ctx_pop_block() -> Vec<Op> {
-    BUILDER_CTX.with(|ctx| {
-        ctx.pop_block()
-    })
-}
-
-pub fn ctx_push(op: &Op) {
-    BUILDER_CTX.with(|ctx| {
-        ctx.push(op.clone());
-    });
-}
-
-
-
-
-#[derive(Debug, Clone)]
-pub enum OpEnum { // could be a trait, once we have a better idea of the functions
-    ProgramID(ProgramIDOp),
-
-    Load(LoadOp),
-    Store(StoreOp),
-
-    // Reshape(ReshapeOp),
-    // Permute(PermuteOp),
-    // Slice(SliceOp),
-    Expand(ExpandOp),
-    Broadcast(BroadcastOp),
-
-    Reduce(ReduceOp),
-    ElementWise(ElementWiseOp),
-    Dot(DotOp),
-
-    Full(FullOp),
-    Constant(ConstantOp),
-    Arange(ArangeOp),
-
-    For(ForOp),
-    SCFFOR(SCFForOp),
-    // If(IfOp),
-    FunctionOp(FunctionOp),
-    Assign(AssignOp),
-}
-
-
-impl OpEnum {
-    pub fn inputs(&self) -> Vec<&Value> {
-        match &self {
-            Self::ProgramID(op) => {vec![]},
-            Self::Load(op) => {
-                let mut inputs = vec![&op.ptr];
-                if let Some(mask) = &op.mask {
-                    inputs.push(mask);
-                }
-                if let Some(value) = &op.value {
-                    inputs.push(value);
-                }
-                inputs
-            }
-            Self::Store(op) => {
-                let mut inputs = vec![&op.ptr, &op.value];
-                if let Some(mask) = &op.mask {
-                    inputs.push(mask);
-                }
-                inputs
-            }
-            // Self::Reshape(op) => vec![&op.input],
-            // Self::Permute(op) => vec![&op.input],
-            // Self::Slice(op) => vec![&op.input],
-            Self::Expand(op) => vec![&op.input],
-            Self::Broadcast(op) => vec![&op.input],
-            Self::Reduce(op) => vec![&op.input],
-            Self::ElementWise(op) => op.args.iter().collect(),
-            Self::Dot(op) => vec![&op.a, &op.b],
-            Self::Full(_op) => vec![],
-            Self::Constant(_op) => vec![],
-            Self::Arange(_op) => vec![],
-            Self::For(op) => vec![&op.start, &op.end, &op.step],
-            Self::SCFFOR(op) => vec![&op.start, &op.end, &op.step].into_iter().chain(op.carries.iter()).collect(),
-            // Self::If(op) => vec![&op.cond],
-            Self::FunctionOp(_op) => vec![],
-            Self::Assign(op) => vec![&op.lhs, &op.rhs],
-        }
-    }
-
-    pub fn outputs(&self) -> Vec<&Value> {
-        match &self {
-            Self::ProgramID(op) => {vec![&op.output]},
-            Self::Load(op) => vec![&op.output],
-            Self::Store(_op) => vec![],
-            // Self::Reshape(op) => vec![&op.output],
-            // Self::Permute(op) => vec![&op.output],
-            // Self::Slice(op) => vec![&op.output],
-            Self::Expand(op) => vec![&op.output],
-            Self::Broadcast(op) => vec![&op.output],
-            Self::Reduce(op) => vec![&op.output],
-            Self::ElementWise(op) => vec![&op.output],
-            Self::Dot(op) => vec![&op.output],
-            Self::Full(op) => vec![&op.output],
-            Self::Constant(op) => vec![&op.output],
-            Self::Arange(op) => vec![&op.output],
-            Self::For(_op) => vec![],
-            Self::SCFFOR(op) => op.redefines.iter().collect(),
-            // Self::If(_op) => vec![],
-            Self::FunctionOp(_op) => vec![],
-            Self::Assign(_op) => vec![],
-        }
-    }
-
-    pub fn blocks(&self) -> Vec<&Block> {
-        match &self {
-            // Self::If(op) => {vec![&op.then, &op.else_]},
-            Self::For(op) => {vec![&op.body]},
-            Self::SCFFOR(op) => {vec![&op.body]},
-            Self::FunctionOp(op) => {vec![&op.body]},
-            _ => vec![],
-        }
-    }
-
-    pub fn internal_as_any(&self) -> &dyn std::any::Any {
-        match self {
-            Self::ProgramID(x) => x,
-            Self::Load(x) => x,
-            Self::Store(x) => x,
-            // Self::Reshape(x) => x,
-            // Self::Permute(x) => x,
-            // Self::Slice(x) => x,
-            Self::Expand(x) => x,
-            Self::Broadcast(x) => x,
-            Self::Reduce(x) => x,
-            Self::ElementWise(x) => x,
-            Self::Dot(x) => x,
-            Self::Full(x) => x,
-            Self::Constant(x) => x,
-            Self::Arange(x) => x,
-            Self::For(x) => x,
-            Self::SCFFOR(x) => x,
-            // Self::If(x) => x,
-            Self::FunctionOp(x) => x,
-            Self::Assign(x) => x,
-        }
-    }
-
-    pub fn name(&self) -> &str {
-        match self {
-            Self::ProgramID(_) => "ProgramID",
-            Self::Load(_) => "Load",
-            Self::Store(_) => "Store",
-            // Self::Reshape(_) => "Reshape",
-            // Self::Permute(_) => "Permute",
-            // Self::Slice(_) => "Slice",
-            Self::Expand(_) => "Expand",
-            Self::Broadcast(_) => "Broadcast",
-            Self::Reduce(_) => "Reduce",
-            Self::ElementWise(_) => "ElementWise",
-            Self::Dot(_) => "Dot",
-            Self::Full(_) => "Full",
-            Self::Constant(_) => "Constant",
-            Self::Arange(_) => "Arange",
-            Self::For(_) => "For",
-            Self::SCFFOR(_) => "SCFFOR",
-            // Self::If(_) => "If",
-            Self::FunctionOp(_) => "FunctionOp",
-            Self::Assign(_) => "Assign",
-        }
-    }
-}
-
-#[derive(Debug, Clone)]
-pub struct AssignOp {
-    pub lhs: Value,
-    pub rhs: Value,
-}
-
-
-#[derive(Debug, Clone)]
-pub struct ForOp {
-    pub induction_var: Value,
-    pub start: Value,
-    pub end: Value,
-    pub step: Value,
-    pub body: Block,
-}
-
-#[derive(Debug, Clone)]
-pub struct SCFForOp {
-    pub induction_var: Value,
-    pub start: Value,
-    pub end: Value,
-    pub step: Value,
-    pub body: Block,
-    pub carries: Vec<Value>,
-    pub redefines: Vec<Value>,
-}
-
-#[derive(Debug, Clone)]
-pub struct IfOp {
-    pub cond: Value,
-    pub then: Block,
-    pub else_: Block,
-}
-
-#[derive(Debug, Clone)]
-pub struct FunctionOp {
-    pub name: String,
-    pub body: Block
-}
-
-#[derive(Debug, Clone)]
-pub struct ProgramIDOp {
-    pub output: Value,
-}
-
-impl ProgramIDOp {
-    pub fn build() -> Self {
-        let val = Value::new(Type::scalar(ElType::Val(Dtype::I32)));
-        ProgramIDOp { output: val.clone() }
-    }
-
-    
-}
-
-#[derive(Debug, Clone)]
-pub struct LoadOp {
-    pub ptr: Value,
-    pub mask: Option<Value>,
-    pub value: Option<Value>,
-    pub output: Value,
-}
-
-impl LoadOp {
-    pub fn build(ptr: &Value, mask: Option<&Value>, value: Option<&Value>) -> Result<Self> {
-        let val = Value::new(ptr.type_of().to_value());
-        Ok(LoadOp {
-            ptr: ptr.clone(),
-            mask: mask.cloned(),
-            value: value.cloned(),
-            output: val.clone(),
-        })
-    }
-}
-
-#[derive(Debug, Clone)]
-pub struct StoreOp {
-    pub ptr: Value,
-    pub value: Value,
-    pub mask: Option<Value>,
-}
-
-impl StoreOp {
-    pub fn build(ptr: &Value, value: &Value, mask: Option<&Value>) -> Result<Self> {
-        Ok(StoreOp {
-            ptr: ptr.clone(),
-            value: value.clone(),
-            mask: mask.cloned(),
-        })
-    }
-
-}
-
-#[derive(Debug, Clone)]
-pub struct ReshapeOp {
-    pub input: Value,
-    pub shape: Vec<usize>,
-    pub output: Value,
-}
-
-impl ReshapeOp {
-    fn get_reshape_output_shape(ishape: &[usize], shape: &[i32]) -> Result<Vec<usize>> {
-        if shape.iter().filter(|x| **x < -1 || **x == 0).count() > 0 {
-            return Err(Error::msg(
-                "shape cannot contain any negative values (other than -1) or zeros",
-            ));
-        }
-        let neg_count = shape.iter().filter(|x| **x == -1).count();
-        if neg_count > 1 {
-            return Err(Error::msg("shape cannot contain more than one -1"));
-        }
-        let prod_wo_neg = shape
-            .iter()
-            .filter(|x| **x > 0)
-            .fold(1, |x, y| x * (*y) as usize);
-        let prod_in = ishape.iter().fold(1, |x, y| x * *y);
-        if (neg_count == 0 && prod_in != prod_wo_neg) || prod_in % prod_wo_neg != 0 {
-            return Err(Error::msg(format!(
-                "cannot reshape tensor of size {:?} into shape {:?}",
-                ishape, shape
-            )));
-        }
-        let oshape = shape
-            .iter()
-            .map(|x| {
-                if *x == -1 {
-                    prod_in / prod_wo_neg
-                } else {
-                    *x as usize
-                }
-            })
-            .collect::<Vec<_>>();
-        Ok(oshape)
-    }
-
-    pub fn build(input: &Value, shape: &[i32]) -> Result<Self> {
-        let oshape = ReshapeOp::get_reshape_output_shape(input.type_of().shape(), shape)?;
-        let val = Value::new(Type::tensor(input.type_of().eltype.clone(), &oshape));
-        Ok(ReshapeOp {
-            input: input.clone(),
-            shape: oshape,
-            output: val.clone(),
-        })
-    }
-}
-
-#[derive(Debug, Clone)]
-pub struct PermuteOp {
-    pub input: Value,
-    pub permutation: Vec<usize>,
-    pub output: Value,
-}
-
-impl PermuteOp {
-    fn get_permute_output_shape(ishape: &[usize], permute: &[u32]) -> Result<Vec<usize>> {
-        let mut perm: Vec<_> = permute.into();
-        perm.sort();
-        for (i, p) in (0..ishape.len()).zip(perm) {
-            if i != p as usize {
-                return Err(Error::msg(format!(
-                    "Invalid permutation indicies, got {:?}",
-                    permute
-                )));
-            }
-        }
-        let out = permute.iter().map(|x| ishape[*x as usize]).collect();
-        Ok(out)
-    }
-
-    pub fn build(input: &Value, permutation: &[u32]) -> Result<Self> {
-        let oshape =
-            PermuteOp::get_permute_output_shape(input.type_of().shape(), permutation)?;
-        let val = Value::new(Type::tensor(input.type_of().eltype.clone(), &oshape));
-        Ok(PermuteOp {
-            input: input.clone(),
-            permutation: permutation.iter().map(|x| *x as usize).collect(),
-            output: val.clone(),
-        })
-    }
-}
-
-#[derive(Debug, Clone)]
-pub struct SliceOp {
-    pub input: Value,
-    pub slices: Vec<Range<usize>>,
-    pub output: Value,
-}
-
-impl SliceOp {
-    fn get_slice_output_shape(
-        ishape: &[usize],
-        slices: &[Range<i32>],
-    ) -> Result<(Vec<usize>, Vec<Range<usize>>)> {
-        if slices.len() > ishape.len() {
-            return Err(Error::msg(
-                "Number of slice dimensions must be equal or smaller 
-                than the number of actual dimensions"));
-        }
-        let mut oshape = vec![];
-        let mut oslice = vec![];
-        for (os, slice) in ishape.iter().zip(slices) {
-            if slice.end + (*os as i32) <= 0 || slice.start < 0 {
-                return Err(Error::msg("slice error"));
-            }
-            let upper = if slice.end < 0 {
-                ((*os) as i32 + slice.end) as usize
-            } else {
-                slice.end as usize
-            };
-            let lower = slice.start as usize;
-            if upper < lower {
-                return Err(Error::msg("slice error"));
-            }
-            let new_shape = upper - lower;
-            if new_shape > 0 {
-                oshape.push(new_shape)
-            }
-            oslice.push(lower..upper);
-        }
-        Ok((oshape, oslice))
-    }
-
-    /// Range: a..b
-    /// RangeTo: 0..b
-    /// RangeFrom: a..-1
-    /// RangeFull: 0..-1
-    /// Index and remove dim: a..a
-    pub fn build(input: &Value, slices: &[Range<i32>]) -> Result<Self> {
-        let (oshape, oslice) =
-            SliceOp::get_slice_output_shape(input.type_of().shape(), slices)?;
-
-        let val = Value::new(Type::tensor(input.type_of().eltype.clone(), &oshape));
-        Ok(SliceOp {
-            input: input.clone(),
-            slices: oslice,
-            output: val.clone(),
-        })
-    }
-}
-
-#[derive(Debug, Clone)]
-pub struct ExpandOp {
-    pub input: Value,
-    pub dim: usize,
-    pub output: Value,
-}
-
-impl ExpandOp {
-    pub fn build(input: &Value, dim: i32) -> Result<Self> {
-        let res_dim = if dim < 0 {
-            input.type_of().rank() as i32 + dim + 1
-        } else {
-            dim
-        };
-        if res_dim < 0 || res_dim > input.type_of().rank() as i32 {
-            return Err(Error::msg(format!(
-                "Invalid expand dimension, got {}",
-                dim
-            )));
-        }
-        let mut oshape = input.type_of().shape().to_vec();
-        oshape.insert(res_dim as usize, 1);
-        let val = Value::new(Type::tensor(input.type_of().eltype.clone(), &oshape));
-        Ok(ExpandOp {
-            input: input.clone(),
-            dim: res_dim as usize,
-            output: val.clone(),
-        })
-    }
-}
-
-#[derive(Debug, Clone)]
-pub struct BroadcastOp {
-    pub input: Value,
-    pub output: Value,
-}
-
-impl BroadcastOp {
-    pub fn broad_cast_shape(a: &[usize], b: &[usize]) -> Result<Vec<usize>> {
-        if b.len() > a.len() {
-            return Self::broad_cast_shape(b, a);
-        }
-        let mut oshape = vec![];
-        for (x, y) in a.iter().zip(b.iter()) {
-            if *x == *y {
-                oshape.push(*x);
-            } else if *x == 1 {
-                oshape.push(*y);
-            } else if *y == 1 {
-                oshape.push(*x);
-            } else {
-                return Err(Error::msg(format!(
-                    "Cannot broadcast shapes {:?} and {:?}",
-                    a, b
-                )));
-            }
-        }
-        for x in a.iter().skip(b.len()) {
-            oshape.push(*x);
-        }
-        Ok(oshape)
-    }
-
-    pub fn build(input: &Value, shape: &[usize]) -> Result<Self> {
-        let shape = BroadcastOp::broad_cast_shape(
-            input.type_of().shape(),
-            shape
-        )?;
-        let val = Value::new(Type::tensor(input.type_of().eltype.clone(), &shape));
-        Ok(BroadcastOp {
-            input: input.clone(),
-            output: val.clone(),
-        })
-    }
-}
-
-#[derive(Debug, Clone)]
-pub struct ReduceOp {
-    pub input: Value,
-    pub dim: usize,
-    pub op: ReduceOpOption,
-    pub output: Value,
-}
-
-impl ReduceOp {
-    pub fn build(input: &Value, dim: i32, op: ReduceOpOption) -> Result<Self> {
-        let reduce_dim = if dim < 0 {
-            input.type_of().rank() as i32 + dim
-        } else {
-            dim
-        };
-        if reduce_dim < 0 || reduce_dim >= input.type_of().rank() as i32 {
-            return Err(Error::msg(format!(
-                "Invalid reduce dimension, got {} with input shape {:?}",
-                dim, input.type_of().shape()
-            )));
-        }
-        let val = Value::new(Type::tensor(
-            input.type_of().eltype.clone(),
-            &input
-                .type_of()
-                .shape()
-                .iter()
-                .enumerate()
-                .filter(|(i, _)| *i != dim as usize)
-                .map(|(_, x)| *x)
-                .collect::<Vec<_>>(),
-        ));
-        Ok(ReduceOp {
-            input: input.clone(),
-            dim: dim as usize,
-            op,
-            output: val.clone(),
-        })
-    }
-}
-
-#[derive(Debug, Clone)]
-pub struct DotOp {
-    pub a: Value,
-    pub b: Value,
-    pub output: Value,
-}
-
-impl DotOp {
-    pub fn build(a: &Value, b: &Value) -> Result<Self> {
-        if a.type_of().rank() != 2 || b.type_of().rank() != 2 {
-            return Err(Error::msg(format!(
-                "Dot product requires both inputs to be matrices, got {:?} and {:?}",
-                a.type_of(),
-                b.type_of()
-            )));
-        }
-        if a.type_of().eltype != b.type_of().eltype {
-            return Err(Error::msg(format!(
-                "Dot product requires both inputs to have the same element type, got {:?} and {:?}",
-                a.type_of(),
-                b.type_of()
-            )));
-        }
-        let val = Value::new(Type::tensor(
-            a.type_of().eltype.clone(),
-            &[a.type_of().shape()[0], b.type_of().shape()[1]],
-        ));
-        Ok(DotOp {
-            a: a.clone(),
-            b: b.clone(),
-            output: val.clone(),
-        })
-    }
-}
-
-#[derive(Debug, Clone)]
-pub struct ElementWiseOp {
-    pub name: ElementwiseFnOption,
-    pub args: Vec<Value>,
-    pub output: Value,
-}
-
-#[derive(Debug, Clone)]
-pub enum ElementwiseFnOption {
-    Intrinsic(IntrinsicElementwise),
-    Extern(String, ElType),
-}
-
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub enum IntrinsicElementwise {
     Add, Sub, Mul, Div, Neg, Rem,
     Pow, Exp, Log, Sqrt,
@@ -1760,7 +550,6 @@ pub enum IntrinsicElementwise {
     Shr, Shl,
     Ceil, Floor, Round,
     Max, Min,
-    Cast(Type),
     Where,
 }
 
@@ -1776,12 +565,11 @@ impl IntrinsicElementwise {
             Self::Shr | Self::Shl => 2,
             Self::Ceil | Self::Floor | Self::Round => 1,
             Self::Max | Self::Min => 2,
-            Self::Cast(_) => 1,
             Self::Where => 3,
         }
     }
 
-    pub fn verify_type(&self, vals: &[Value]) -> Result<()> {
+    pub fn verify_type(&self, vals: &[Type]) -> Result<()> {
         if self.num_operands() != vals.len() {
             return Err(Error::msg(format!(
                 "Intrinsic {:?} requires {} operands, got {}",
@@ -1790,23 +578,23 @@ impl IntrinsicElementwise {
                 vals.len()
             )));
         }
-        let a = vals[0].type_of();
-        if !vals.iter().all(|x| x.type_of().shape() == a.shape()) {
+        let a = &vals[0];
+        if !vals.iter().all(|x| x.shape() == a.shape()) {
             return Err(Error::msg(format!(
                 "Intrinsic {:?} requires all operands to have the same shape, got {:?}",
-                self, vals.iter().map(|x| x.type_of()).collect::<Vec<_>>()
+                self, vals.iter().collect::<Vec<_>>()
             )));
         }
 
         if self.num_operands() == 2 {
-            let b = vals[1].type_of();
+            let b = &vals[1];
             let all_same = a == b;
             match self {
                 Self::Add | Self::Sub => {
                     if !((a.is_float() && b.is_float()) || (a.is_int() && b.is_int()) || (a.is_ptr() && b.is_int()) || (a.is_int() && b.is_ptr())) {
                         return Err(Error::msg(format!(
                             "+ requires either floating + floating, int + int, int + ptr or ptr + int, got {:?}",
-                            vals.iter().map(|x| x.type_of()).collect::<Vec<_>>()
+                            vals.iter().map(|x| x).collect::<Vec<_>>()
                         )));
                     }
                 }
@@ -1814,7 +602,7 @@ impl IntrinsicElementwise {
                     if !all_same && !(a.is_float() || a.is_int()) {
                         return Err(Error::msg(format!(
                             "Intrinsic {:?} requires all operands to have the same element type and either floating or integral, got {:?}",
-                            self, vals.iter().map(|x| x.type_of()).collect::<Vec<_>>()
+                            self, vals.iter().map(|x| x).collect::<Vec<_>>()
                         )));
                     }
                 }
@@ -1822,7 +610,7 @@ impl IntrinsicElementwise {
                     if !all_same && !a.is_int() {
                         return Err(Error::msg(format!(
                             "Intrinsic {:?} requires all operands to have the same element type and integral, got {:?}",
-                            self, vals.iter().map(|x| x.type_of()).collect::<Vec<_>>()
+                            self, vals.iter().map(|x| x).collect::<Vec<_>>()
                         )));
                     }
                 }
@@ -1830,7 +618,7 @@ impl IntrinsicElementwise {
                     if !all_same && !a.is_float() {
                         return Err(Error::msg(format!(
                             "Intrinsic {:?} requires all operands to have the same element type and floating, got {:?}",
-                            self, vals.iter().map(|x| x.type_of()).collect::<Vec<_>>()
+                            self, vals.iter().map(|x| x).collect::<Vec<_>>()
                         )));
                     }
                 }
@@ -1838,7 +626,7 @@ impl IntrinsicElementwise {
                     if !all_same {
                         return Err(Error::msg(format!(
                             "Intrinsic {:?} requires all operands to have the same element type, got {:?}",
-                            self, vals.iter().map(|x| x.type_of()).collect::<Vec<_>>()
+                            self, vals.iter().map(|x| x).collect::<Vec<_>>()
                         )));
                     }
                 }
@@ -1846,7 +634,7 @@ impl IntrinsicElementwise {
                     if !(all_same && (a.is_int() || a.is_bool())) {
                         return Err(Error::msg(format!(
                             "Intrinsic {:?} requires all operands to have the same element type and either integral or boolean, got {:?}",
-                            self, vals.iter().map(|x| x.type_of()).collect::<Vec<_>>()
+                            self, vals.iter().map(|x| x).collect::<Vec<_>>()
                         )));
                     }
                 }
@@ -1854,7 +642,7 @@ impl IntrinsicElementwise {
                     if !(all_same && a.is_bool()) {
                         return Err(Error::msg(format!(
                             "Intrinsic {:?} requires all operands to have the same element type and boolean, got {:?}",
-                            self, vals.iter().map(|x| x.type_of()).collect::<Vec<_>>()
+                            self, vals.iter().map(|x| x).collect::<Vec<_>>()
                         )));
                     }
                 }
@@ -1862,7 +650,7 @@ impl IntrinsicElementwise {
                     if !(b.is_int() && (a.is_int() || a.is_ptr() || a.is_bool())) {
                         return Err(Error::msg(format!(
                             "Intrinsic {:?} requires first operand to be either integral boolean or pointer and the second to be integral, got {:?}",
-                            self, vals.iter().map(|x| x.type_of()).collect::<Vec<_>>()
+                            self, vals.iter().map(|x| x).collect::<Vec<_>>()
                         )));
                     }
                 }
@@ -1870,12 +658,12 @@ impl IntrinsicElementwise {
             }
         } else if self.num_operands() == 3 {
             if let Self::Where = self {
-                let b = vals[1].type_of();
-                let c = vals[2].type_of();
+                let b = &vals[1];
+                let c = &vals[2];
                 if !(a.is_bool() && b == c) {
                     return Err(Error::msg(format!(
                         "Intrinsic {:?} requires first operand to be boolean and the other two to have the same element type, got {:?}",
-                        self, vals.iter().map(|x| x.type_of()).collect::<Vec<_>>()
+                        self, vals.iter().map(|x| x).collect::<Vec<_>>()
                     )));
                 }
             }
@@ -1885,7 +673,7 @@ impl IntrinsicElementwise {
                     if !a.is_float() && !a.is_int() {
                         return Err(Error::msg(format!(
                             "Intrinsic {:?} requires all operands to have either floating or integral element type, got {:?}",
-                            self, vals.iter().map(|x| x.type_of()).collect::<Vec<_>>()
+                            self, vals.iter().map(|x| x).collect::<Vec<_>>()
                         )));
                     }
                 }
@@ -1893,7 +681,7 @@ impl IntrinsicElementwise {
                     if !a.is_bool() {
                         return Err(Error::msg(format!(
                             "Intrinsic {:?} requires all operands to have boolean element type, got {:?}",
-                            self, vals.iter().map(|x| x.type_of()).collect::<Vec<_>>()
+                            self, vals.iter().map(|x| x).collect::<Vec<_>>()
                         )));
                     }
                 },
@@ -1901,11 +689,10 @@ impl IntrinsicElementwise {
                     if !a.is_float() {
                         return Err(Error::msg(format!(
                             "Intrinsic {:?} requires all operands to have floating element type, got {:?}",
-                            self, vals.iter().map(|x| x.type_of()).collect::<Vec<_>>()
+                            self, vals.iter().map(|x| x).collect::<Vec<_>>()
                         )));
                     }
                 },
-                Self::Cast(_) => {}
                 _ => {}
             }
         }
@@ -1930,116 +717,17 @@ impl IntrinsicElementwise {
         }
     }
 
-    pub fn return_type<'a>(&self, vals: &'a [Value]) -> &'a Type {
+    pub fn return_type<'a>(&self, vals: &'a [Type]) -> &'a Type {
         if self.num_operands() == 2 {
-            return Self::binary_upcast(vals[0].type_of(), vals[1].type_of());
+            return Self::binary_upcast(&vals[0], &vals[1]);
         } else if self.num_operands() == 3 {
             if let Self::Where = self {
-                return vals[1].type_of();
+                return &vals[1];
             }
             unreachable!();
         } else if self.num_operands() == 1 {
-            return vals[0].type_of();
+            return &vals[0];
         }
         unreachable!()
     }
 }
-
-impl ElementWiseOp {
-    pub fn build(f: ElementwiseFnOption, args: &[Value]) -> Result<Self> {
-        let repr_arg = args.first().ok_or(Error::msg("args cannot be empty"))?;
-        let oshape = repr_arg.type_of().shape().to_vec();
-        if let ElementwiseFnOption::Intrinsic(op) = &f {
-            op.verify_type(args)?;
-        } // extern functions are not verified
-
-        let return_type = match &f {
-            ElementwiseFnOption::Intrinsic(a) => a.return_type(args).eltype.clone(),
-            ElementwiseFnOption::Extern(_, a) => a.clone(),
-        };
-
-        let val = Value::new(Type::tensor(
-            return_type,
-            &oshape,
-        ));
-        Ok(ElementWiseOp {
-            name: f,
-            args: args.into(),
-            output: val.clone(),
-        })
-    }
-    
-}
-
-#[derive(Debug, Clone)]
-pub struct FullOp {
-    pub const_value: Constant,
-    pub output: Value,
-}
-
-impl FullOp {
-    pub fn build(value: impl Into<Constant>, shape: &[usize]) -> Self {
-        let c: Constant = value.into();
-        let ctype = Type::tensor(ElType::Val(c.dtype()), shape);
-        let val = Value::new(ctype);
-        FullOp {
-            const_value: c,
-            output: val.clone(),
-        }
-    }
-}
-
-#[derive(Debug, Clone)]
-pub struct ConstantOp {
-    pub const_value: Constant,
-    pub output: Value,
-}
-
-impl ConstantOp {
-    pub fn build(value: impl Into<Constant>) -> Self {
-        let c: Constant = value.into();
-        let ctype = Type::scalar(ElType::Val(c.dtype()));
-        let val = Value::new(ctype);
-        ConstantOp {
-            const_value: c,
-            output: val.clone(),
-        }
-    }
-}
-
-#[derive(Debug, Clone)]
-pub struct ArangeOp {
-    pub begin: i32,
-    pub end: i32,
-    pub output: Value,
-}
-
-impl ArangeOp {
-    pub fn build(begin: i32, end: i32) -> Result<Self> {
-        if begin >= end {
-            return Err(Error::msg(format!(
-                "begin must be less than end, got {} and {}",
-                begin, end
-            )));
-        }
-        let val = Value::new(Type::tensor(ElType::Val(Dtype::I32), &[(end - begin) as usize]));
-        Ok(ArangeOp {
-            begin,
-            end,
-            output: val.clone(),
-        })
-    }
-}
-
-
-#[derive(Debug, Clone)]
-pub enum ReduceOpOption {
-    Sum,
-    Prod,
-    Min,
-    Max,
-    And,
-    Or,
-    Xor,
-}
-

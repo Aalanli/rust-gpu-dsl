@@ -4,7 +4,6 @@ use std::collections::HashMap;
 mod examples;
 pub mod lang;
 pub mod utils;
-mod linear_ir;
 
 pub struct TraitRegistry {
     fall_back_converter: HashMap<(std::any::TypeId, std::any::TypeId), Box<dyn for <'a> Fn(&'a dyn Any) -> *const ()>>,

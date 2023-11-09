@@ -1,4 +1,6 @@
 use std::{hash::Hash, fmt::Display, marker::PhantomData};
+use anyhow::{Error, Result};
+
 mod map_list;
 mod node_list;
 mod vec_list;
@@ -95,4 +97,30 @@ impl<T: Display + 'static> Attribute for T {
     fn as_any(&self) -> &dyn std::any::Any {
         self
     }
+}
+
+
+pub fn broad_cast_shape(a: &[usize], b: &[usize]) -> Result<Vec<usize>> {
+    if b.len() > a.len() {
+        return broad_cast_shape(b, a);
+    }
+    let mut oshape = vec![];
+    for (x, y) in a.iter().zip(b.iter()) {
+        if *x == *y {
+            oshape.push(*x);
+        } else if *x == 1 {
+            oshape.push(*y);
+        } else if *y == 1 {
+            oshape.push(*x);
+        } else {
+            return Err(Error::msg(format!(
+                "Cannot broadcast shapes {:?} and {:?}",
+                a, b
+            )));
+        }
+    }
+    for x in a.iter().skip(b.len()) {
+        oshape.push(*x);
+    }
+    Ok(oshape)
 }
