@@ -3,10 +3,11 @@ use std::any::TypeId;
 use std::cell::RefCell;
 use std::collections::{HashMap, HashSet};
 use std::marker::PhantomData;
+use std::ops::Index;
 use anyhow::{Result, Error};
 use crate::lang::ir::{self, Value, Op, Block, OpId};
 
-use super::ir::IRModule;
+use super::ir::{IRModule, BlockId};
 
 pub trait Visitor<S> {
     fn visit(&self, visitor: &dyn Visitor<S>, state: &mut S, op: &Op) -> Result<()>;
@@ -551,169 +552,98 @@ fn encoding_visitor() -> impl Visitor<EncodingState> {
     })
 }
 
-/// top-down, outside-in
-fn walk_preorder(irm: &mut IRModule, mut f: impl FnMut(&mut IRModule, &ir::OpId)) {
-    let mut queue = Vec::from_iter(irm.root_ops().iter().rev().cloned());
-    while let Some(op) = queue.pop() {
-        f(irm, &op);
-        for block in irm.blocks(&op).iter().rev() {
-            for op in irm.block_ops(block).iter().rev() {
-                queue.push(op.clone());
-            }
-        }
-    }
-}
-
 /// bottom-up, inside-out
 fn walk_postorder(irm: &mut IRModule, mut f: impl FnMut(&mut IRModule, &ir::OpId)) {
-    let mut queue = Vec::from_iter(irm.root_ops().iter().cloned());
-    let mut expanded = vec![];
-    while let Some(op) = queue.pop() {
-        let has_inner = irm.blocks(&op).len() > 0 && irm.block_ops(&irm.blocks(&op)[0]).len() > 0;
-        if has_inner {
-            queue.push(op.clone());
-            expanded.push(op.clone());
-        }
-        for block in irm.blocks(&op).iter() {
-            for op in irm.block_ops(block).iter() {
-                queue.push(op.clone());
+    fn walk_postorder_helper(
+        irm: &mut IRModule, 
+        f: &mut impl FnMut(&mut IRModule, &ir::OpId), 
+        op: &ir::OpId
+    ) {
+        let mut key = irm.op_blocks_back(op);
+        while let Some(bk) = &key {
+            let mut ok = irm.block_back(bk);
+            while let Some(ok_) = &ok {
+                walk_postorder_helper(irm, f, ok_);
+                ok = irm.op_prev(ok_);
             }
-        }
-
-        if !has_inner {
-            f(irm, &op);
-        } else if expanded.last().map_or(false, |x| *x == op) {
-            f(irm, &op);
-            expanded.pop();
-        }
+            key = irm.block_prev(bk);
+        } 
+        f(irm, op);
     }
+    let Some(last_root) = irm.root_ops().last() else { return; };
+    walk_postorder_helper(irm, &mut f, &last_root);
 }
 
-/// Removes assign ops within a single block
-fn remove_assign_op(irm: &mut IRModule, block: ir::BlockId) {
-    assert!(irm.block_ops(&block).len() >= 1, "Block has to have at least one op");
-    assert!(irm.op_type(irm.block_ops(&block).last().unwrap()) == &ir::SCFYield, "Block has to end with a yield op");
 
-    let mut val_remap = HashMap::new();
-    let mut new_block_ops = vec![];
-    for i in 0..irm.block_ops(&block).len() {
-        let op = irm.block_ops(&block)[i].clone();
-        if irm.op_type(&op) == &ir::Assign {
-            let lhs = irm.operands(&op)[0].clone();
-            let rhs = irm.operands(&op)[1].clone();
-            val_remap.insert(lhs.clone(), rhs.clone());
-        } else {
-            for i in 0..irm.operands(&op).len() {
-                let val = &irm.operands(&op)[i];
-                if let Some(new_val) = val_remap.get(val) {
-                    irm.set_op_operand(&op, i, new_val);
-                }
-            }
-            new_block_ops.push(op);
-        }
+fn for_each_op(irm: &mut IRModule, block: &BlockId, mut f: impl FnMut(&mut IRModule, &ir::OpId)) {
+    let mut op_key = irm.block_front(block);
+    while let Some(op) = &op_key {
+        f(irm, op);
+        op_key = irm.op_next(op);
     }
-    irm.set_block_ops(&block, new_block_ops);
 }
 
 fn canoncalize_for(irm: &mut IRModule) {
     walk_postorder(irm, |irm, op_id| {
-        if *irm.op_type(op_id) == ir::For {
-            // we assume that all inner fors are canoncalized
-            assert!(irm.blocks(op_id).len() == 1, "For loop has more than one block");
-            let block = irm.blocks(op_id)[0].clone();
-            // 1. hoist non-locals to block_args, and insert yield op
-            // ex:
-            // a = ...
-            // c = ...
-            // for (start=0, end=10, step=1) |i| {
-            //     b = a + i
-            //     d = c * i
-            //     e = b + c
-            //     a := e
-            // }
-            // p = f(a)
-            // =>
-            // a = ...
-            // c = ...
-            // a1, c1 = for (start=0, end=10, step=1, a, c) |i, a, c| {
-            //     b = a + i
-            //     d = c * i
-            //     e = b + c
-            //     a := e
-            //     yield a, c
-            // }
-            // p = f(a1)
-            {
-                assert!(irm.block_args(&block).len() == 1, "For loop has more than one block arg");
-                let ind_var = irm.block_args(&block)[0].clone();
-                let mut block_args = vec![ind_var];
-                // remap non-local values to local block args
-                let mut remap_to_block_arg = HashMap::new();
-                let mut locals = HashSet::new();
-                for i in 0..irm.block_ops(&block).len() {
-                    let op = irm.block_ops(&block)[i].clone();
-                    for j in 0..irm.operands(&op).len() {
-                        let arg = irm.operands(&op)[j].clone();
+        if *irm.op_ty(op_id) == ir::For {
+            // get nonlocals
+            let mut nonlocals = vec![];
+            let mut locals = HashSet::new();
+            let block = irm.op_blocks_front(op_id).unwrap();
+            // insert the induction var
+            locals.insert(irm.block_args(&block)[0].clone());
 
-                        if locals.contains(&arg) {
-                            continue;
-                        }
-                        // arg is non-local
-                        if !remap_to_block_arg.contains_key(&arg) {
-                            let block_arg = irm.build_value(irm.value_type(&arg).clone());
-                            remap_to_block_arg.insert(arg.clone(), block_arg.clone());
-                            block_args.push(block_arg);
-                        }
-                        let block_arg = remap_to_block_arg.get(&arg).unwrap().clone();
-                        irm.set_op_operand(&op, j, &block_arg);
-                    }
-                    for ret in irm.returns(&op) {
-                        locals.insert(ret.clone());
+            for_each_op(irm, &block, |irm, op| {
+                for arg in irm.op_operands(op) {
+                    if !locals.contains(arg) {
+                        nonlocals.push(arg.clone());
+                        locals.insert(arg.clone());
                     }
                 }
-                // yield everything, even read-only values, so long as its non-local
-                let yields = block_args[1..].to_vec();
-                // construct new return values
-                let returns = yields.iter().map(|x| irm.build_value(irm.value_type(x).clone())).collect::<Vec<_>>();
+                for ret in irm.op_returns(op) {
+                    locals.insert(ret.clone());
+                }
+            });
 
-                let block_arg_to_global = remap_to_block_arg.iter().map(|(k, v)| (v, k)).collect::<HashMap<_, _>>();
-                let new_assigns = block_args[1..].iter().zip(returns.iter())
-                    .map(|(block_arg, return_val)| {
-                        irm.build_op(ir::Assign, [block_arg_to_global[block_arg].clone(), return_val.clone()], [], [])
-                    }).collect::<Vec<_>>();
+            // remap nonlocals to block args
+            let mut block_args = irm.drain_block_args(&block);
+            block_args.extend(
+                nonlocals.iter().map(|x| {
+                    let ty = irm.value_type(x).clone();
+                    let arg = irm.build_value(ty);
+                    arg
+                })
+            );
+            irm.set_block_args(&block, block_args);
 
-                // get original operands, start, end, step
-                let mut operands = irm.operands(op_id).to_vec();
-                // non-locals are now op operands
-                block_args[1..].iter().for_each(|x| operands.push(block_arg_to_global[x].clone()));
+            for_each_op(irm, &block, |irm, op| {
+                for i in 0..irm.op_operands(op).len() {
+                    let arg = irm.op_operands(op)[i].clone();
+                    if let Some(j) = nonlocals.iter().position(|x| x == &arg) {
+                        irm.set_op_operand(op, j, nonlocals[j].clone());                        
+                    }
+                }
+            });
 
-                let yield_op = irm.build_op(ir::SCFYield, yields, [], []);
-                irm.insert_block_op(&block, irm.block_ops(&block).len(), &yield_op);
-                irm.set_block_args(&block, block_args);
-                
-                let scffor = irm.build_op(ir::SCFFor, operands.clone(), returns, [block.clone()]);
-                // eliminates all inner uses of non-local values
-                irm.replace_op(op_id, &scffor);
-                
-                let parent_block = irm.parent(&scffor).expect("for loop has no parent block").clone();
-                let idx = irm.block_ops(&parent_block).iter().position(|x| x == &scffor).unwrap() + 1;
-                irm.splice_block_op(&parent_block, idx..idx+1, new_assigns);
+            // create yield op
+            let yield_op = irm.build_op(ir::SCFYield, irm.block_args(&block).to_vec(), vec![], vec![]);
+            irm.block_push_back(&block, yield_op);
 
+            // create new return values
+            let returns = nonlocals.iter().map(|x| {
+                let ty = irm.value_type(x).clone();
+                irm.build_value(ty)}
+            ).collect::<Vec<_>>();
+
+            irm.set_op_returns(op_id, returns);
+
+            // create new assigns to map nonlocals to returns in the parent block
+            let parent_block = irm.op_parent_block(op_id).unwrap();
+            for i in 0..nonlocals.len() {
+                let assign_op = irm.build_op(ir::Assign, vec![nonlocals[i].clone(), irm.op_returns(op_id)[i].clone()], vec![], vec![]);
+                irm.block_push_back(&parent_block, assign_op);
             }
-
-            // 2. remove assign ops
-            // =>
-            // a = ...
-            // c = ...
-            // a1, c1 = for (start=0, end=10, step=1, a, c) |i, a, c| {
-            //     b = a + i
-            //     d = c * i
-            //     e = b + c
-            //     yield e, c
-            // }
-            // p = f(a1)
-            remove_assign_op(irm, block);
+            
         }
     });
 }
-

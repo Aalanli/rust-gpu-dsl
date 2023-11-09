@@ -80,6 +80,10 @@ impl<T> VecDoubleList<T> {
         }
     }
 
+    pub fn get_front(&self) -> Option<&T> {
+        self.front().map(|x| self.get(&x).unwrap())
+    }
+
     pub fn back(&self) -> Option<VecListKey> {
         if self.back == Self::SENTINEL {
             None
@@ -87,6 +91,10 @@ impl<T> VecDoubleList<T> {
             debug_assert!(unsafe { self.generation(self.back)} & Self::EMPTY_MARKER == 0);
             Some(VecListKey { index: self.back, generation: unsafe { self.generation(self.back) }, uid: self.uid })
         }
+    }
+
+    pub fn get_back(&self) -> Option<&T> {
+        self.back().map(|x| self.get(&x).unwrap())
     }
 
     unsafe fn prev_index(&self, key: usize) -> usize {
@@ -313,6 +321,21 @@ impl<T> VecDoubleList<T> {
         let front = self.front();
         DoubleListMutIter { iter: self, key: front, }
     }
+
+    pub fn iter_key(&self) -> IterKey<T> {
+        IterKey { iter: self, key: self.front() }
+    }
+
+    pub fn find(&self, mut f: impl FnMut(&T) -> bool) -> Option<VecListKey> {
+        let mut key = self.front();
+        while let Some(k) = key {
+            if f(self.get(&k).unwrap()) {
+                return Some(k);
+            }
+            key = self.next(&k);
+        }
+        None
+    }
 }
 
 impl<T> Drop for VecDoubleList<T> {
@@ -402,6 +425,22 @@ impl<T> IntoIterator for VecDoubleList<T> {
     }
 }
 
+pub struct IterKey<'a, T> {
+    iter: &'a VecDoubleList<T>,
+    key: Option<VecListKey>,
+}
+
+impl<'a, T> Iterator for IterKey<'a, T> {
+    type Item = VecListKey;
+    fn next(&mut self) -> Option<Self::Item> {
+        if let Some(key) = self.key.clone() {
+            self.key = self.iter.next(&key);
+            return Some(key.clone());
+        }
+        None
+    }
+}
+
 pub struct DoubleListMutIter<'a, T> {
     iter: &'a mut VecDoubleList<T>,
     key: Option<VecListKey>,
@@ -419,6 +458,16 @@ impl<'a, T> Iterator for DoubleListMutIter<'a, T> {
             }
         }
         None
+    }
+}
+
+impl<T> FromIterator<T> for VecDoubleList<T> {
+    fn from_iter<I: IntoIterator<Item=T>>(iter: I) -> Self {
+        let mut list = VecDoubleList::new();
+        for item in iter {
+            list.push_back(item);
+        }
+        list
     }
 }
 

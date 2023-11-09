@@ -66,10 +66,33 @@ pub fn simple_print_list<T: Display>(list: &impl DoubleList<T>) {
     println!();
 }
 
-#[cfg(test)]
-pub mod test {
-    use super::*;
-    fn test_list(lst: &mut impl DoubleList<i32>) {
-        
+pub struct Printer {
+
+}
+
+impl Printer {
+    pub fn new() -> Self { todo!() }
+    pub fn line(&mut self, f: impl FnOnce(&mut Self)) { todo!() }
+    pub fn indent(&mut self, f: impl FnOnce(&mut Self)) { todo!() }
+
+    pub fn token(&mut self, token: impl Into<String>) { 
+        let token: String = token.into();
+        assert!(self.is_token(&token), "Token must not contain newlines");
+        todo!()
+    }
+    pub fn tokenlist(&mut self, tokens: impl IntoIterator<Item=impl Into<String>>) { todo!() }
+
+    pub fn is_token(&mut self, token: &str) -> bool { 
+        token.chars().all(|c: char| c != '\n')
+    }
+}
+
+pub trait Attribute: Display + 'static {
+    fn as_any(&self) -> &dyn std::any::Any;
+}
+
+impl<T: Display + 'static> Attribute for T {
+    fn as_any(&self) -> &dyn std::any::Any {
+        self
     }
 }
