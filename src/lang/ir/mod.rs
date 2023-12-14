@@ -731,3 +731,118 @@ impl IntrinsicElementwise {
         unreachable!()
     }
 }
+
+
+mod test {
+    #[derive(Clone, Copy)]
+    struct GC<'a> {
+        _marker: std::marker::PhantomData<&'a Ref<'a, ()>>,
+    }
+
+    #[derive(Copy)]
+    struct Ref<'a, T> {
+        gc: &'a GC<'a>,
+        id: usize,
+        _marker: std::marker::PhantomData<&'a T>,
+    }
+
+    impl<T> Clone for Ref<'_, T> {
+        fn clone(&self) -> Self {
+            Ref {
+                gc: self.gc,
+                id: self.id,
+                _marker: std::marker::PhantomData,
+            }
+        }
+    }
+
+    struct MyStruct<'a> {
+        item: Option<Ref<'a, MyStruct<'a>>>,
+    }
+
+    impl<'a> GC<'a> {
+        fn new() -> Self {
+            todo!()
+        }
+
+        fn get_mut<'b: 'a, T>(&'a self, id: Ref<'b, T>, f: impl FnOnce(&mut T)) {
+            todo!()
+        }
+
+        fn make<T: 'a>(&'a self, item: T) -> Ref<'a, T> {
+            todo!()
+        }
+
+        fn clear(&mut self) { todo!() }
+    }
+
+    struct MyStruct2<'a, 'b> {
+        item: Option<Ref<'a, MyStruct2<'a, 'b>>>,
+        i: &'b i32,
+    }
+
+    fn test() {
+        let mut gc = GC::new();
+
+        let a = gc.make(MyStruct { item: None });
+        let b = gc.make(MyStruct { item: None });
+
+        gc.get_mut(a, |x| {
+            x.item = Some(b);
+        });
+
+        gc.clear();
+
+        let i = 1;
+        let a = gc.make(MyStruct2 { item: None, i: &i });
+        {
+            let j = 2;
+            let b = gc.make(MyStruct2 { item: None, i: &j });
+            gc.get_mut(a.clone(), |x: &mut MyStruct2| {
+                x.item = Some(b);
+            });
+        }
+
+        gc.get_mut(a, |x| {
+            let b = x.item.as_ref().unwrap().clone();
+            gc.get_mut(b, |y| {
+                println!("{}", y.i);
+            });
+        })
+    }
+
+    #[derive(Clone, Copy, Debug)]
+    struct MyVec {
+    }
+
+    impl MyVec {
+        fn new() -> Self {
+            todo!()
+        }
+
+        fn push<T>(&mut self, item: T) {
+            todo!()
+        }
+    }
+
+    fn test2() {
+        let mut a = MyVec::new();
+        {
+            let i = 1;
+            a.push(&i);
+        }
+        println!("{:?}", a);
+    }
+
+    // struct T <'a> {
+    //     a: &'a i32
+    // }
+
+    // fn foo<T: 'static>(a: T) {}
+    // fn bar() {
+    //     let a = 1;
+    //     foo(T { a: &a });
+
+    // }
+
+}
