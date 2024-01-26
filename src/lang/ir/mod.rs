@@ -846,3 +846,118 @@ mod test {
     // }
 
 }
+
+/*
+mod test2 {
+    use std::marker::PhantomData;
+
+    struct GC<'a> {
+        _m: PhantomData<&'a i32>
+    }
+
+    trait Trace {}
+
+    impl<T: Copy> Trace for T {}
+
+    impl<'a> GC<'a> {
+        fn new() -> GC<'a> {
+            GC { _m: PhantomData }
+        }
+
+        fn alloc<T: 'a + Trace>(&'a mut self, a: T) -> &'a T { todo!() }
+
+        fn free(&mut self) {}
+    }
+
+    struct GC2<'a, T> {
+        _m: PhantomData<&'a T>
+    }
+
+    impl<'a, T> GC2<'a, T> {
+        fn new() -> GC2<'a, T> {
+            GC2 { _m: PhantomData }
+        }
+
+        fn alloc(&mut self, a: &'a T) { todo!() }
+
+        fn free(&mut self) {}
+    }
+
+    fn test() {
+        let mut gc = GC::new();
+        {
+            let a = 1;
+            gc.alloc(&a);
+            // gc.free();
+
+        }
+
+        // gc.alloc(&a);
+        gc.free();
+
+        let mut gc2 = GC2::new();
+
+        {
+            let a = 1;
+            gc2.alloc(&a);
+        }
+        gc2.free();
+
+
+        let mut v = Vec::new();
+        {
+            let a = 23;
+            v.push(&a);
+        }
+        v.clear();
+    }
+}
+*/
+
+mod test3 {
+    struct GC {}
+    
+    #[derive(Clone)]
+    struct RefToken {}
+
+    #[derive(Clone)]
+    struct Ref<'a> {
+        gc: &'a GC,
+        id: usize,
+    }
+
+    impl GC {
+        fn alloc<T>(&mut self, x: T) -> RefToken {
+            todo!()
+        }
+    }
+
+    struct Query {}
+    impl Query {
+        fn get(&self, x: RefToken) -> Ref<'_> {
+            todo!()
+        }
+    }
+
+    struct MyStruct<'a> {
+        item: Option<Ref<'a>>,
+    }
+
+    fn test() {
+        let mut gc = GC {};
+        let query = Query {};
+        let a = gc.alloc(MyStruct { item: None });
+        let b = gc.alloc(MyStruct { item: None });
+        let a = gc.alloc(MyStruct {
+            item: Some(query.get(a)),
+        });
+        let b = gc.alloc(MyStruct {
+            item: Some(query.get(b)),
+        });
+
+        {
+            let p = 12;
+            let token = gc.alloc(&p);
+        }
+    }
+}
